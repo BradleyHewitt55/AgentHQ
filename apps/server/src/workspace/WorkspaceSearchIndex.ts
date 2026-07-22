@@ -12,8 +12,7 @@ import type {
   ProjectSearchEntriesResult,
 } from "@t3tools/contracts";
 
-const WORKSPACE_INDEX_MAX_ENTRIES = 25_000;
-const WORKSPACE_INDEX_PAGE_SIZE = WORKSPACE_INDEX_MAX_ENTRIES + 2;
+const WORKSPACE_INDEX_COUNT_PAGE_SIZE = 1;
 const WORKSPACE_INDEX_SCAN_TIMEOUT = "15 seconds";
 const WORKSPACE_INDEX_IDLE_TTL = "15 minutes";
 const WORKSPACE_INDEX_SCAN_POLL_INTERVAL = "50 millis";
@@ -287,16 +286,12 @@ export const make = Effect.fn("WorkspaceSearchIndex.make")(function* (cwd: strin
 
   const list: WorkspaceSearchIndex["Service"]["list"] = Effect.fn("WorkspaceSearchIndex.list")(
     function* () {
-      const result = yield* runMixedSearch("", WORKSPACE_INDEX_PAGE_SIZE);
-      const mapped = mapMixedSearchResult(result, WORKSPACE_INDEX_MAX_ENTRIES);
-      const sortedEntries = withDirectoryAncestors(mapped.entries).toSorted((left, right) =>
-        left.path.localeCompare(right.path),
-      );
-      const entries = sortedEntries.slice(0, WORKSPACE_INDEX_MAX_ENTRIES);
-      return {
-        entries,
-        truncated: mapped.truncated || entries.length < sortedEntries.length,
-      };
+      const countResult = yield* runMixedSearch("", WORKSPACE_INDEX_COUNT_PAGE_SIZE);
+      const result = yield* runMixedSearch("", Math.max(1, countResult.totalMatched));
+      const entries = withDirectoryAncestors(
+        mapMixedSearchResult(result, result.totalMatched).entries,
+      ).toSorted((left, right) => left.path.localeCompare(right.path));
+      return { entries, truncated: false };
     },
   );
 

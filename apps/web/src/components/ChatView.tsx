@@ -350,6 +350,7 @@ const TYPE_TO_FOCUS_EDITABLE_SELECTOR = [
   "input",
   "textarea",
   "select",
+  "[data-file-editor]",
   '[contenteditable="true"]',
   '[contenteditable="plaintext-only"]',
   '[role="textbox"]',

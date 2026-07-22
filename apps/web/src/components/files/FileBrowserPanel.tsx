@@ -161,7 +161,7 @@ export default function FileBrowserPanel({
     density: "compact",
     fileTreeSearchMode: "hide-non-matches",
     flattenEmptyDirectories: true,
-    initialExpansion: 1,
+    initialExpansion: 0,
     icons: T3_PIERRE_ICONS,
     onSelectionChange: (selectedPaths) => {
       dragMention.handleSelectionChange(selectedPaths);

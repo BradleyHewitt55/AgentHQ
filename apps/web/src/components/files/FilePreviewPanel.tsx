@@ -52,7 +52,7 @@ import {
 } from "./fileCommentAnnotations";
 import { installFileEditorDismissal } from "./fileEditorDismissal";
 import { LocalCommentAnnotation } from "./LocalCommentAnnotation";
-import { projectFileCacheKey } from "./fileContentRevision";
+import { EditableFileCacheKey, projectFileCacheKey } from "./fileContentRevision";
 import { fileBreadcrumbs } from "./filePath";
 import { isMarkdownPreviewFile, setMarkdownTaskChecked } from "./filePreviewMode";
 import { FileSaveCoordinator } from "./fileSaveCoordinator";
@@ -355,6 +355,10 @@ function EditableFileSurface({
   );
   const surfaceRef = useRef<HTMLDivElement>(null);
   const selectionFrameRef = useRef<number | null>(null);
+  const [editableFileCacheKey] = useState(
+    () => new EditableFileCacheKey(cwd, relativePath, contents),
+  );
+  const renderedFile = editableFileCacheKey.resolve(contents);
   const saveCoordinator = useFileSaveCoordinator({
     environmentId,
     cwd,
@@ -365,6 +369,7 @@ function EditableFileSurface({
     () =>
       new Editor<FileCommentAnnotationGroup>({
         onChange: (file, nextLineAnnotations) => {
+          editableFileCacheKey.localChange(file.contents);
           setProjectFileQueryData(environmentId, cwd, relativePath, file.contents);
           saveCoordinator.change(file.contents);
           if (nextLineAnnotations) {
@@ -391,7 +396,15 @@ function EditableFileSurface({
           }
         },
       }),
-    [addReviewComment, composerDraftTarget, cwd, environmentId, relativePath, saveCoordinator],
+    [
+      addReviewComment,
+      composerDraftTarget,
+      cwd,
+      editableFileCacheKey,
+      environmentId,
+      relativePath,
+      saveCoordinator,
+    ],
   );
 
   useEffect(
@@ -537,7 +550,7 @@ function EditableFileSurface({
 
   return (
     <EditorProvider editor={editor}>
-      <div ref={surfaceRef} className="flex min-h-0 flex-1">
+      <div ref={surfaceRef} className="flex min-h-0 flex-1" data-file-editor>
         <Virtualizer
           className="file-preview-virtualizer min-h-0 flex-1 overflow-auto"
           config={{
@@ -548,8 +561,8 @@ function EditableFileSurface({
           <File<FileCommentAnnotationGroup>
             file={{
               name: relativePath,
-              contents,
-              cacheKey: projectFileCacheKey(cwd, relativePath, contents),
+              contents: renderedFile.contents,
+              cacheKey: renderedFile.cacheKey,
             }}
             options={{
               disableFileHeader: true,

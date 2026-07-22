@@ -1,0 +1,3 @@
+[submodule ".repos/synara"]
+	path = .repos/synara
+	url = https://github.com/Emanuele-web04/synara.git

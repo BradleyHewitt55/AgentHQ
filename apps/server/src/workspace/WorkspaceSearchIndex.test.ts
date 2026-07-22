@@ -122,6 +122,48 @@ it.effect("preserves search and refresh failures with operation context", () =>
   ),
 );
 
+it.effect("lists every indexed entry without truncating the workspace", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const allItems = [
+        { type: "directory", item: { relativePath: "" } },
+        { type: "file", item: { relativePath: "src/index.ts" } },
+        { type: "file", item: { relativePath: "README.md" } },
+      ];
+      const mixedSearch = vi
+        .fn()
+        .mockReturnValueOnce({
+          ok: true,
+          value: { items: allItems.slice(0, 1), totalMatched: allItems.length },
+        })
+        .mockReturnValueOnce({
+          ok: true,
+          value: { items: allItems, totalMatched: allItems.length },
+        });
+      const finder = {
+        destroy: vi.fn(),
+        isScanning: vi.fn(() => false),
+        mixedSearch,
+      } as unknown as FileFinder;
+      vi.spyOn(FileFinder, "create").mockReturnValueOnce({ ok: true, value: finder });
+
+      const searchIndex = yield* WorkspaceSearchIndex.make("/workspace/project");
+      const result = yield* searchIndex.list();
+
+      expect(mixedSearch).toHaveBeenNthCalledWith(1, "", { pageSize: 1 });
+      expect(mixedSearch).toHaveBeenNthCalledWith(2, "", { pageSize: allItems.length });
+      expect(result).toEqual({
+        entries: [
+          { path: "README.md", kind: "file" },
+          { path: "src", kind: "directory" },
+          { path: "src/index.ts", kind: "file" },
+        ],
+        truncated: false,
+      });
+    }),
+  ),
+);
+
 it.effect("keeps returned search diagnostics out of the cause chain", () =>
   Effect.scoped(
     Effect.gen(function* () {

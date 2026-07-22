@@ -10,3 +10,32 @@ export function fileContentRevision(contents: string): string {
 export function projectFileCacheKey(cwd: string, relativePath: string, contents: string): string {
   return `${cwd}:${relativePath}:${fileContentRevision(contents)}`;
 }
+
+export class EditableFileCacheKey {
+  readonly #cwd: string;
+  readonly #relativePath: string;
+  #editorContents: string;
+  #renderedContents: string;
+  #cacheKey: string;
+
+  constructor(cwd: string, relativePath: string, contents: string) {
+    this.#cwd = cwd;
+    this.#relativePath = relativePath;
+    this.#editorContents = contents;
+    this.#renderedContents = contents;
+    this.#cacheKey = projectFileCacheKey(cwd, relativePath, contents);
+  }
+
+  localChange(contents: string): void {
+    this.#editorContents = contents;
+  }
+
+  resolve(contents: string): { readonly cacheKey: string; readonly contents: string } {
+    if (contents !== this.#editorContents) {
+      this.#editorContents = contents;
+      this.#renderedContents = contents;
+      this.#cacheKey = projectFileCacheKey(this.#cwd, this.#relativePath, contents);
+    }
+    return { cacheKey: this.#cacheKey, contents: this.#renderedContents };
+  }
+}
