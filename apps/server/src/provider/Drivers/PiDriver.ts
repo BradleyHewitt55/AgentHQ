@@ -1,16 +1,12 @@
 // @effect-diagnostics globalDateInEffect:off
-import {
-  PiSettings,
-  ProviderDriverKind,
-  TextGenerationError,
-  type ServerProvider,
-} from "@t3tools/contracts";
+import { PiSettings, ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import * as Effect from "effect/Effect";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
+import { joinPath } from "../Layers/adapterShared.ts";
 import { makePiAdapter } from "../Layers/PiAdapter.ts";
 import { loadPiSdk } from "../Layers/piSdk.ts";
 import {
@@ -20,7 +16,7 @@ import {
 } from "../ProviderDriver.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
-import type * as TextGeneration from "../../textGeneration/TextGeneration.ts";
+import { unsupportedTextGeneration } from "./unsupportedTextGeneration.ts";
 
 const DRIVER_KIND = ProviderDriverKind.make("pi");
 
@@ -33,30 +29,6 @@ interface PiAvailableModel {
   readonly reasoning?: boolean;
 }
 const decodeSettings = Schema.decodeSync(PiSettings);
-const joinPath = (directory: string, filename: string) =>
-  `${directory.replace(/[\\/]$/u, "")}/${filename}`;
-
-const unsupportedTextGeneration = (): TextGeneration.TextGeneration["Service"] => {
-  const fail = (
-    operation:
-      | "generateCommitMessage"
-      | "generatePrContent"
-      | "generateBranchName"
-      | "generateThreadTitle",
-  ) =>
-    Effect.fail(
-      new TextGenerationError({
-        operation,
-        detail: "Pi is not configured for background text generation.",
-      }),
-    );
-  return {
-    generateCommitMessage: () => fail("generateCommitMessage"),
-    generatePrContent: () => fail("generatePrContent"),
-    generateBranchName: () => fail("generateBranchName"),
-    generateThreadTitle: () => fail("generateThreadTitle"),
-  };
-};
 
 export const PiDriver: ProviderDriver<PiSettings> = {
   driverKind: DRIVER_KIND,
@@ -123,30 +95,38 @@ export const PiDriver: ProviderDriver<PiSettings> = {
         ...(available.length === 0
           ? { message: "Authenticate Pi with `pi /login` or configure an API key." }
           : {}),
-        models: available.map((model) => ({
-          slug: `${model.provider}/${model.id}`,
-          name: model.name,
-          subProvider: model.provider,
-          isCustom: false,
-          capabilities: createModelCapabilities({
-            optionDescriptors: model.reasoning
-              ? [
-                  {
-                    id: "thinking",
-                    label: "Thinking",
-                    type: "select",
-                    options: ["off", "minimal", "low", "medium", "high", "xhigh"].map((id) => ({
-                      id,
-                      label:
-                        id === "xhigh" ? "Extra High" : id.charAt(0).toUpperCase() + id.slice(1),
-                      ...(id === "medium" ? { isDefault: true as const } : {}),
-                    })),
-                    currentValue: "medium",
-                  },
-                ]
-              : [],
-          }),
-        })),
+        models: [
+          ...available.map((model) => ({
+            slug: `${model.provider}/${model.id}`,
+            name: model.name,
+            subProvider: model.provider,
+            isCustom: false,
+            capabilities: createModelCapabilities({
+              optionDescriptors: model.reasoning
+                ? [
+                    {
+                      id: "thinking",
+                      label: "Thinking",
+                      type: "select",
+                      options: ["off", "minimal", "low", "medium", "high", "xhigh"].map((id) => ({
+                        id,
+                        label:
+                          id === "xhigh" ? "Extra High" : id.charAt(0).toUpperCase() + id.slice(1),
+                        ...(id === "medium" ? { isDefault: true as const } : {}),
+                      })),
+                      currentValue: "medium",
+                    },
+                  ]
+                : [],
+            }),
+          })),
+          ...effectiveConfig.customModels.map((slug) => ({
+            slug,
+            name: slug,
+            isCustom: true,
+            capabilities: createModelCapabilities({ optionDescriptors: [] }),
+          })),
+        ],
         slashCommands: [
           { name: "reload", description: "Reload Pi extensions, skills, prompts, and settings." },
         ],
@@ -183,7 +163,7 @@ export const PiDriver: ProviderDriver<PiSettings> = {
         enabled,
         snapshot: providerSnapshot,
         adapter,
-        textGeneration: unsupportedTextGeneration(),
+        textGeneration: unsupportedTextGeneration("Pi"),
       } satisfies ProviderInstance;
     }),
 };

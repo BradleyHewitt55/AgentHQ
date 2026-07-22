@@ -1,8 +1,7 @@
-// @effect-diagnostics globalDate:off
-import crypto from "node:crypto";
+// @effect-diagnostics globalDate:off runEffectInsideEffect:off
+import * as NodeCrypto from "node:crypto";
 import type { AgentSession, AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import {
-  EventId,
   ProviderDriverKind,
   type ProviderInstanceId,
   type ProviderRuntimeEvent,
@@ -25,9 +24,21 @@ import {
   type ProviderAdapterError,
 } from "../Errors.ts";
 import type { ProviderAdapterShape, ProviderThreadSnapshot } from "../Services/ProviderAdapter.ts";
+import {
+  buildRuntimeEvent,
+  joinPath,
+  message,
+  now,
+  rollbackTurns,
+  type ProviderRuntimeEventDraft,
+} from "./adapterShared.ts";
 import { loadPiSdk } from "./piSdk.ts";
 
+export { rollbackTurns } from "./adapterShared.ts";
+
 const PROVIDER = ProviderDriverKind.make("pi");
+
+type PiModelRuntime = AgentSession["modelRuntime"];
 
 type PiContext = {
   providerSession: ProviderSession;
@@ -42,19 +53,22 @@ type PiContext = {
   stopped: boolean;
 };
 
-const message = (cause: unknown) =>
-  cause instanceof Error && cause.message.trim() ? cause.message : String(cause);
+const itemId = () => RuntimeItemId.make(NodeCrypto.randomUUID());
 
-const itemId = () => RuntimeItemId.make(crypto.randomUUID());
-const now = () => new globalThis.Date().toISOString();
-const joinPath = (directory: string, filename: string) =>
-  `${directory.replace(/[\\/]$/u, "")}/${filename}`;
-
-export const rollbackTurns = <T>(turns: T[], numTurns: number): T[] | undefined => {
-  if (!Number.isInteger(numTurns) || numTurns < 1 || numTurns > turns.length) return undefined;
-  turns.splice(turns.length - numTurns, numTurns);
-  return turns;
+/** The Pi SDK addresses models as `provider/id`; one parser for every call site. */
+const resolveModel = (runtime: PiModelRuntime, slug: string) => {
+  const separator = slug.indexOf("/");
+  return separator > 0
+    ? runtime.getModel(slug.slice(0, separator), slug.slice(separator + 1))
+    : runtime.getModels().find((entry) => entry.id === slug);
 };
+
+const toolItemType = (toolName: string) =>
+  toolName === "bash"
+    ? ("command_execution" as const)
+    : toolName === "edit" || toolName === "write"
+      ? ("file_change" as const)
+      : ("dynamic_tool_call" as const);
 
 export interface PiAdapterOptions {
   readonly instanceId: ProviderInstanceId;
@@ -70,16 +84,21 @@ export const makePiAdapter = (
     const sessions = new Map<ThreadId, PiContext>();
     const agentDir = settings.agentDir.trim() || undefined;
 
-    const emit = (context: PiContext, event: Record<string, unknown>) => {
-      void Effect.runPromise(
-        Queue.offer(events, {
-          eventId: EventId.make(crypto.randomUUID()),
-          provider: PROVIDER,
-          providerInstanceId: options.instanceId,
-          threadId: context.providerSession.threadId,
-          createdAt: now(),
-          ...event,
-        } as ProviderRuntimeEvent),
+    const emit = (context: PiContext, draft: ProviderRuntimeEventDraft) => {
+      // Offering to an unbounded queue always completes synchronously, so this
+      // never escapes fiber supervision the way a floating promise would.
+      Effect.runSync(
+        Queue.offer(
+          events,
+          buildRuntimeEvent(
+            {
+              provider: PROVIDER,
+              providerInstanceId: options.instanceId,
+              threadId: context.providerSession.threadId,
+            },
+            draft,
+          ),
+        ),
       );
     };
 
@@ -121,12 +140,7 @@ export const makePiAdapter = (
           turnId: context.activeTurnId,
           itemId: id,
           payload: {
-            itemType:
-              event.toolName === "bash"
-                ? "command_execution"
-                : event.toolName === "edit" || event.toolName === "write"
-                  ? "file_change"
-                  : "dynamic_tool_call",
+            itemType: toolItemType(event.toolName),
             status: "inProgress",
             title: event.toolName,
             data: { toolCallId: event.toolCallId, toolName: event.toolName, args: event.args },
@@ -135,12 +149,7 @@ export const makePiAdapter = (
         });
         addItem(context, {
           itemId: id,
-          itemType:
-            event.toolName === "bash"
-              ? "command_execution"
-              : event.toolName === "edit" || event.toolName === "write"
-                ? "file_change"
-                : "dynamic_tool_call",
+          itemType: toolItemType(event.toolName),
           status: "inProgress",
           title: event.toolName,
           data: { toolCallId: event.toolCallId, toolName: event.toolName, args: event.args },
@@ -154,12 +163,7 @@ export const makePiAdapter = (
           turnId: context.activeTurnId,
           itemId: id,
           payload: {
-            itemType:
-              event.toolName === "bash"
-                ? "command_execution"
-                : event.toolName === "edit" || event.toolName === "write"
-                  ? "file_change"
-                  : "dynamic_tool_call",
+            itemType: toolItemType(event.toolName),
             status: event.isError ? "failed" : "completed",
             title: event.toolName,
             data: {
@@ -173,12 +177,7 @@ export const makePiAdapter = (
         });
         addItem(context, {
           itemId: id,
-          itemType:
-            event.toolName === "bash"
-              ? "command_execution"
-              : event.toolName === "edit" || event.toolName === "write"
-                ? "file_change"
-                : "dynamic_tool_call",
+          itemType: toolItemType(event.toolName),
           status: event.isError ? "failed" : "completed",
           title: event.toolName,
           data: {
@@ -189,9 +188,6 @@ export const makePiAdapter = (
           },
         });
         context.toolItems.delete(event.toolCallId);
-        return;
-      }
-      if (event.type === "agent_end" && context.activeTurnId && !event.willRetry) {
         return;
       }
       if (event.type === "agent_settled" && context.activeTurnId) {
@@ -230,7 +226,7 @@ export const makePiAdapter = (
           payload: {
             state: context.abortInFlight ? "cancelled" : "completed",
             usage: stats.tokens,
-            cumulativeCostUsd: stats.cost,
+            totalCostUsd: stats.cost,
           },
           raw,
         });
@@ -291,14 +287,32 @@ export const makePiAdapter = (
           }),
       });
       const selected = input.modelSelection?.model;
-      const [modelProvider, ...modelParts] = selected?.includes("/") ? selected.split("/") : [];
-      const model = modelProvider
-        ? modelRuntime.getModel(modelProvider, modelParts.join("/"))
-        : selected
-          ? modelRuntime.getModels().find((entry) => entry.id === selected)
-          : undefined;
+      // `getModel` throws for an unknown provider/id pair, and `SessionManager.open`
+      // throws for an unreadable resume path — both are synchronous SDK calls that
+      // would otherwise surface as fiber defects rather than typed failures.
+      const model = selected
+        ? yield* Effect.try({
+            try: () => resolveModel(modelRuntime, selected),
+            catch: (cause) =>
+              new ProviderAdapterRequestError({
+                provider: PROVIDER,
+                method: "getModel",
+                detail: message(cause),
+                cause,
+              }),
+          })
+        : undefined;
       const resumeFile = typeof input.resumeCursor === "string" ? input.resumeCursor : undefined;
-      const manager = resumeFile ? SessionManager.open(resumeFile) : SessionManager.create(cwd);
+      const manager = yield* Effect.try({
+        try: () => (resumeFile ? SessionManager.open(resumeFile) : SessionManager.create(cwd)),
+        catch: (cause) =>
+          new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: resumeFile ? "SessionManager.open" : "SessionManager.create",
+            detail: message(cause),
+            cause,
+          }),
+      });
       const result = yield* Effect.tryPromise({
         try: () =>
           createAgentSession({
@@ -372,25 +386,35 @@ export const makePiAdapter = (
         });
       if (input.modelSelection?.model) {
         const selected = input.modelSelection.model;
-        const slash = selected.indexOf("/");
-        const runtime = context.agent.modelRuntime;
-        const model =
-          slash > 0
-            ? runtime.getModel(selected.slice(0, slash), selected.slice(slash + 1))
-            : runtime.getModels().find((entry) => entry.id === selected);
-        if (model)
-          yield* Effect.tryPromise({
-            try: () => context.agent.setModel(model),
-            catch: (cause) =>
-              new ProviderAdapterRequestError({
-                provider: PROVIDER,
-                method: "setModel",
-                detail: message(cause),
-                cause,
-              }),
+        const model = yield* Effect.try({
+          try: () => resolveModel(context.agent.modelRuntime, selected),
+          catch: (cause) =>
+            new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "getModel",
+              detail: message(cause),
+              cause,
+            }),
+        });
+        // Skipping the switch would silently run the turn on the previous model.
+        if (!model)
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "sendTurn",
+            issue: `Unknown Pi model: ${selected}.`,
           });
+        yield* Effect.tryPromise({
+          try: () => context.agent.setModel(model),
+          catch: (cause) =>
+            new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "setModel",
+              detail: message(cause),
+              cause,
+            }),
+        });
       }
-      const turnId = TurnId.make(crypto.randomUUID());
+      const turnId = TurnId.make(NodeCrypto.randomUUID());
       context.activeTurnId = turnId;
       context.turns.push({ id: turnId, items: [] });
       context.providerSession = {
@@ -409,11 +433,24 @@ export const makePiAdapter = (
         },
         raw: { source: "pi.sdk.event", method: "prompt", payload: {} },
       });
-      const attachmentLines = (input.attachments ?? []).map(
+      const attachments = input.attachments ?? [];
+      if (attachments.length > 0)
+        // Only the filename reaches the model — say so rather than letting the
+        // turn read as if the image had been delivered.
+        emit(context, {
+          type: "runtime.warning",
+          turnId,
+          payload: {
+            message: "Pi received attachment names only; image data was not sent.",
+            detail: attachments.map((attachment) => attachment.name),
+          },
+          raw: { source: "pi.sdk.event", method: "prompt.attachments", payload: {} },
+        });
+      const attachmentLines = attachments.map(
         (attachment) => `[Attached image: ${attachment.name}]`,
       );
       const prompt = [input.input?.trim(), ...attachmentLines].filter(Boolean).join("\n\n");
-      Effect.runPromise(
+      yield* Effect.forkDetach(
         Effect.tryPromise({
           try: () => context.agent.prompt(prompt),
           catch: (cause) =>
@@ -442,7 +479,7 @@ export const makePiAdapter = (
             }),
           ),
         ),
-      ).catch(() => undefined);
+      );
       return {
         threadId: input.threadId,
         turnId,
@@ -452,12 +489,17 @@ export const makePiAdapter = (
 
     const stop = (context: PiContext) =>
       Effect.tryPromise({
+        // A rejected `abort()` must not strand the agent or its `sessions`
+        // entry: dispose and deregistration run either way.
         try: async () => {
           context.stopped = true;
           context.unsubscribe();
-          await context.agent.abort();
-          context.agent.dispose();
-          sessions.delete(context.providerSession.threadId);
+          try {
+            await context.agent.abort();
+          } finally {
+            context.agent.dispose();
+            sessions.delete(context.providerSession.threadId);
+          }
         },
         catch: (cause) =>
           new ProviderAdapterRequestError({
@@ -533,7 +575,8 @@ export const makePiAdapter = (
           ),
         ),
       stopAll: () =>
-        Effect.forEach(Array.from(sessions.values()), stop, {
+        // One failing session must not abandon the rest of the shutdown.
+        Effect.forEach(Array.from(sessions.values()), (context) => Effect.ignore(stop(context)), {
           concurrency: "unbounded",
           discard: true,
         }),
