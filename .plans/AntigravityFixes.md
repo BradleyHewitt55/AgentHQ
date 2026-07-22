@@ -193,10 +193,11 @@ Do not ship the provider as `available: true` in the picker
        `ProviderSession.resumeCursor` and return it from `sendTurn`.
     2. Send `--new-project` only on the first turn of a session.
     3. Replay prior turns into the prompt (bounded by a token/char budget).
-  - Resolution: option 2 — `--new-project` on the first turn of a session,
-    `--continue` afterwards. `--print` prints no conversation ID, so option 1
-    is not reachable; `--continue` resumes the most recent conversation, which
-    is unambiguous because a session's turns are serialized.
+  - Resolution: option 3 — every turn uses `--new-project` and replays the
+    newest prior user/assistant exchanges within the command-line budget.
+    `--print` exposes no conversation ID, while `--continue` is process-global
+    and could attach an interleaved T3 thread to another thread's conversation.
+    Concurrent turns for one session are rejected while a turn is active.
   - Depends on: `C002` (turn history is currently never recorded, so option 3
     has no data to replay).
   - Acceptance: a two-turn conversation where turn 2 references turn 1
@@ -240,9 +241,9 @@ Do not ship the provider as `available: true` in the picker
   - Problem: all stdout is buffered via `mkString` and emitted as one
     `content.delta` after exit. UI shows nothing for the whole turn; memory is
     unbounded on a chatty run.
-  - Fix: emit `content.delta` per chunk as the stream yields. Also strip ANSI
-    escapes / spinner chrome — nothing sanitizes CLI output today, so control
-    codes land verbatim in the assistant message.
+  - Fix: emit `content.delta` as complete output lines become available. The
+    stateful sanitizer carries the unfinished line across chunks so split ANSI
+    escapes and carriage-return redraws cannot leak control characters.
 
 - [x] `C004` Fix the interrupt race that orphans the child process
   - Status: `DONE`
@@ -410,6 +411,26 @@ Renamed to `totalCostUsd`, matching `ClaudeAdapter`.
     - Interrupt-before-spawn (`C004`).
     - `rollbackTurns` reuse (`S009`) — pattern already established by
       `PiAdapter`'s exported helper.
+
+---
+
+## Independent code-and-smell review
+
+The post-implementation Codex review found two high-severity concurrency/
+continuity issues, one medium streaming issue, and one low Windows argv-budget
+issue. The follow-up resolves them in
+`apps/server/src/provider/Layers/AntigravityAdapter.ts` and
+`apps/server/src/provider/Layers/antigravityLaunch.ts`:
+
+- replace process-global `--continue` with bounded transcript replay;
+- reject overlapping turns within one Antigravity session;
+- sanitize complete lines across stdout chunk boundaries; and
+- reduce the prompt budget to `8_000` characters and apply a conservative
+  post-argv expansion bound, reserving space for the executable, model, flags,
+  quoting, and shell escaping.
+
+Focused coverage lives in `AntigravityAdapter.test.ts` and
+`antigravityLaunch.test.ts`.
 
 ---
 

@@ -2,8 +2,11 @@ import { describe, expect, it } from "@effect/vitest";
 
 import {
   ANTIGRAVITY_MODEL_NAMES,
+  AntigravityOutputSanitizer,
   buildAntigravityArgs,
+  buildAntigravityPrompt,
   DEFAULT_ANTIGRAVITY_MODEL,
+  isAntigravityCommandWithinBudget,
   resolveCliModel,
   runtimeModeToAntigravityArgs,
   sanitizeCliOutput,
@@ -50,21 +53,14 @@ describe("runtimeModeToAntigravityArgs", () => {
 });
 
 describe("buildAntigravityArgs", () => {
-  it("starts a project on the first turn and continues afterwards", () => {
-    const first = buildAntigravityArgs({
+  it("starts an isolated project on every turn", () => {
+    const args = buildAntigravityArgs({
       runtimeMode: "full-access",
       model: DEFAULT_ANTIGRAVITY_MODEL,
       prompt: "hello",
-      resumeConversation: false,
     });
-    expect(first[0]).toBe("--new-project");
-    const second = buildAntigravityArgs({
-      runtimeMode: "full-access",
-      model: DEFAULT_ANTIGRAVITY_MODEL,
-      prompt: "hello",
-      resumeConversation: true,
-    });
-    expect(second[0]).toBe("--continue");
+    expect(args[0]).toBe("--new-project");
+    expect(args).not.toContain("--continue");
   });
 
   it("keeps the prompt in a single --print=value argument", () => {
@@ -72,7 +68,6 @@ describe("buildAntigravityArgs", () => {
       runtimeMode: "approval-required",
       model: "Gemini 3.1 Pro",
       prompt: "--not-a-flag",
-      resumeConversation: false,
     });
     expect(args).toEqual([
       "--new-project",
@@ -89,6 +84,21 @@ describe("buildAntigravityArgs", () => {
   it("defaults to the first advertised model", () => {
     expect(DEFAULT_ANTIGRAVITY_MODEL).toBe(ANTIGRAVITY_MODEL_NAMES[0]);
   });
+
+  it("conservatively rejects commands whose shell escaping can exceed Windows limits", () => {
+    expect(isAntigravityCommandWithinBudget("agy.cmd", ["--print=short"])).toBe(true);
+    expect(isAntigravityCommandWithinBudget("agy.cmd", [`--print=${'"'.repeat(12_000)}`])).toBe(
+      false,
+    );
+  });
+});
+
+describe("buildAntigravityPrompt", () => {
+  it("replays prior turns without relying on process-global --continue", () => {
+    expect(buildAntigravityPrompt([{ user: "first", assistant: "answer" }], "second")).toBe(
+      "Previous conversation:\n\nUser:\nfirst\n\nAssistant:\nanswer\n\nCurrent user message:\nsecond",
+    );
+  });
 });
 
 describe("sanitizeCliOutput", () => {
@@ -99,5 +109,13 @@ describe("sanitizeCliOutput", () => {
 
   it("keeps only the last frame of a carriage-return redraw", () => {
     expect(sanitizeCliOutput("thinking...\rdone\nnext")).toBe("done\nnext");
+  });
+
+  it("handles ANSI escapes and redraws split across chunks", () => {
+    const escape = String.fromCharCode(0x1b);
+    const sanitizer = new AntigravityOutputSanitizer();
+    expect(sanitizer.push(`thinking\rdo${escape}[3`)).toBe("");
+    expect(sanitizer.push("2mne\nnext")).toBe("done\n");
+    expect(sanitizer.finish()).toBe("next");
   });
 });

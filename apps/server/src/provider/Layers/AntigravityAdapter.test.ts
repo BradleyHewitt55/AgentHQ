@@ -6,7 +6,8 @@ import {
   type ProviderRuntimeEvent,
   type RuntimeMode,
 } from "@t3tools/contracts";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import { SpawnExecutableResolution } from "@t3tools/shared/shell";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -26,7 +27,7 @@ const THREAD_ID = ThreadId.make("thread-antigravity");
 const INSTANCE_ID = ProviderInstanceId.make("instance-antigravity");
 
 interface FakeProcess {
-  readonly stdout?: string;
+  readonly stdout?: string | ReadonlyArray<string>;
   readonly stderr?: string;
   readonly exitCode?: number;
   readonly gate?: Deferred.Deferred<void>;
@@ -35,13 +36,19 @@ interface FakeProcess {
 interface SpawnRecord {
   readonly command: string;
   readonly args: ReadonlyArray<string>;
+  readonly shell: boolean | string | undefined;
 }
 
 const makeRecordingSpawner = (process: FakeProcess) => {
   const commands: SpawnRecord[] = [];
   const state = { killed: 0 };
   const spawner = ChildProcessSpawner.make((command) => {
-    if ("args" in command) commands.push({ command: command.command, args: command.args });
+    if ("args" in command)
+      commands.push({
+        command: command.command,
+        args: command.args,
+        shell: command.options.shell,
+      });
     const handle = ChildProcessSpawner.makeHandle({
       pid: ChildProcessSpawner.ProcessId(1),
       exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(process.exitCode ?? 0)),
@@ -52,7 +59,11 @@ const makeRecordingSpawner = (process: FakeProcess) => {
         }),
       unref: Effect.succeed(Effect.void),
       stdin: Sink.drain,
-      stdout: Stream.encodeText(Stream.make(process.stdout ?? "")),
+      stdout: Stream.encodeText(
+        Array.isArray(process.stdout)
+          ? Stream.fromIterable(process.stdout)
+          : Stream.make(process.stdout ?? ""),
+      ),
       stderr: Stream.encodeText(Stream.make(process.stderr ?? "")),
       all: Stream.empty,
       getInputFd: () => Sink.drain,
@@ -113,23 +124,81 @@ describe("AntigravityAdapter argv", () => {
     }),
   );
 
-  it.effect("resumes the conversation on the second turn", () =>
+  it.effect("replays the conversation in an isolated project on the second turn", () =>
     Effect.gen(function* () {
       const { adapter, recorder } = yield* runTurnScenario({ process: { stdout: "one" } });
       yield* adapter.sendTurn({ threadId: THREAD_ID, input: "again" });
       yield* drainTurn(adapter.streamEvents);
       expect(recorder.commands[0]?.args[0]).toBe("--new-project");
-      expect(recorder.commands[1]?.args[0]).toBe("--continue");
+      expect(recorder.commands[1]?.args[0]).toBe("--new-project");
+      expect(recorder.commands[1]?.args.find((arg) => arg.startsWith("--print="))).toContain(
+        "User:\nhello\n\nAssistant:\none\n\nCurrent user message:\nagain",
+      );
     }),
+  );
+
+  it.effect("escapes adversarial prompts when Windows resolves a cmd shim", () =>
+    Effect.gen(function* () {
+      const recorder = makeRecordingSpawner({ stdout: "ok" });
+      const adapter = yield* makeAntigravityAdapter(SETTINGS, { instanceId: INSTANCE_ID }).pipe(
+        Effect.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, recorder.spawner)),
+      );
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        runtimeMode: "approval-required",
+        cwd: "C:\\workspace",
+      });
+      yield* adapter.sendTurn({ threadId: THREAD_ID, input: "& whoami" });
+      yield* drainTurn(adapter.streamEvents);
+      const call = recorder.commands[0];
+      expect(call?.command).toContain("agy.cmd");
+      expect(call?.shell).toBe(true);
+      expect(call?.args.find((arg) => arg.includes("whoami"))).not.toBe("--print=& whoami");
+    }).pipe(
+      Effect.provideService(HostProcessPlatform, "win32"),
+      Effect.provideService(HostProcessEnvironment, {
+        PATH: "C:\\fake",
+        PATHEXT: ".EXE;.CMD",
+      }),
+      Effect.provideService(SpawnExecutableResolution, () => "C:\\fake\\agy.cmd"),
+    ),
+  );
+
+  it.effect("rejects a concurrent turn for the same session", () =>
+    Effect.gen(function* () {
+      const gate = yield* Deferred.make<void>();
+      const recorder = makeRecordingSpawner({ stdout: "one", gate });
+      const adapter = yield* makeAntigravityAdapter(SETTINGS, { instanceId: INSTANCE_ID }).pipe(
+        Effect.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, recorder.spawner)),
+      );
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        runtimeMode: "full-access",
+        cwd: "/workspace",
+      });
+      yield* adapter.sendTurn({ threadId: THREAD_ID, input: "first" });
+      const error = yield* adapter
+        .sendTurn({ threadId: THREAD_ID, input: "second" })
+        .pipe(Effect.flip);
+      expect(error._tag).toBe("ProviderAdapterValidationError");
+      yield* Deferred.succeed(gate, undefined);
+      yield* drainTurn(adapter.streamEvents);
+    }).pipe(Effect.provideService(HostProcessPlatform, "linux")),
   );
 });
 
 describe("AntigravityAdapter turn results", () => {
-  it.effect("streams stdout and records the assistant item", () =>
+  it.effect("streams sanitized stdout and records the assistant item", () =>
     Effect.gen(function* () {
-      const { adapter, events } = yield* runTurnScenario({ process: { stdout: "hello world" } });
-      const delta = events.find((event) => event.type === "content.delta");
-      expect(delta?.payload).toMatchObject({ delta: "hello world" });
+      const escape = String.fromCharCode(0x1b);
+      const { adapter, events } = yield* runTurnScenario({
+        process: { stdout: [`thinking\rdo${escape}[3`, "2mne\nnext"] },
+      });
+      const text = events
+        .filter((event) => event.type === "content.delta")
+        .map((event) => event.payload.delta)
+        .join("");
+      expect(text).toBe("done\nnext");
       expect(turnCompleted(events)?.payload).toMatchObject({ state: "completed" });
       const snapshot = yield* adapter.readThread(THREAD_ID);
       expect(snapshot.turns[0]?.items).toHaveLength(1);
