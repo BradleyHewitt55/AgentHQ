@@ -1,8 +1,7 @@
-// @effect-diagnostics globalDate:off
-import crypto from "node:crypto";
+// @effect-diagnostics globalDate:off runEffectInsideEffect:off
+import * as NodeCrypto from "node:crypto";
 import {
   type AntigravitySettings,
-  EventId,
   ProviderDriverKind,
   type ProviderInstanceId,
   type ProviderRuntimeEvent,
@@ -12,6 +11,7 @@ import {
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
+import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import * as Effect from "effect/Effect";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
@@ -25,43 +25,31 @@ import {
   type ProviderAdapterError,
 } from "../Errors.ts";
 import type { ProviderAdapterShape, ProviderThreadSnapshot } from "../Services/ProviderAdapter.ts";
+import {
+  buildRuntimeEvent,
+  message,
+  now,
+  rollbackTurns,
+  type ProviderRuntimeEventDraft,
+} from "./adapterShared.ts";
+import {
+  ANTIGRAVITY_MAX_PROMPT_CHARS,
+  buildAntigravityArgs,
+  DEFAULT_ANTIGRAVITY_MODEL,
+  sanitizeCliOutput,
+} from "./antigravityLaunch.ts";
 
 const PROVIDER = ProviderDriverKind.make("antigravity");
-const DEFAULT_MODEL = "Gemini 3.5 Flash";
-
-// The `agy` CLI only accepts `--model` values with an explicit reasoning
-// effort suffix (e.g. "Gemini 3.5 Flash (Medium)") — a bare model name is
-// rejected with "invalid --model". Base model names are kept as the
-// UI-facing slug; the effort suffix is appended right before invoking the
-// CLI so settings/UI never need to know about efforts.
-const DEFAULT_EFFORT_BY_MODEL: Readonly<Record<string, string>> = {
-  "Gemini 3.6 Flash": "Medium",
-  "Gemini 3.5 Flash": "Medium",
-  "Gemini 3.1 Pro": "Low",
-  "Claude Sonnet 4.6": "High",
-  "Claude Opus 4.6": "High",
-  "GPT-OSS 120B": "Medium",
-};
-
-function resolveCliModel(model: string): string {
-  if (/\([^()]+\)\s*$/u.test(model)) return model;
-  const effort = DEFAULT_EFFORT_BY_MODEL[model] ?? "Medium";
-  return `${model} (${effort})`;
-}
 
 type AntigravityContext = {
   providerSession: ProviderSession;
   activeTurnId: TurnId | undefined;
   activeHandle: ChildProcessHandle | undefined;
   turns: Array<{ id: TurnId; items: unknown[] }>;
+  conversationStarted: boolean;
   interrupted: boolean;
   stopped: boolean;
 };
-
-const message = (cause: unknown) =>
-  cause instanceof Error && cause.message.trim() ? cause.message : String(cause);
-
-const now = () => new globalThis.Date().toISOString();
 
 export interface AntigravityAdapterOptions {
   readonly instanceId: ProviderInstanceId;
@@ -82,17 +70,26 @@ export const makeAntigravityAdapter = (
     const sessions = new Map<ThreadId, AntigravityContext>();
     const binaryPath = settings.binaryPath.trim() || "agy";
 
-    const emit = (context: AntigravityContext, event: Record<string, unknown>) => {
-      void Effect.runPromise(
-        Queue.offer(events, {
-          eventId: EventId.make(crypto.randomUUID()),
-          provider: PROVIDER,
-          providerInstanceId: options.instanceId,
-          threadId: context.providerSession.threadId,
-          createdAt: now(),
-          ...event,
-        } as ProviderRuntimeEvent),
+    const emit = (context: AntigravityContext, draft: ProviderRuntimeEventDraft) => {
+      // Offering to an unbounded queue always completes synchronously, so this
+      // never escapes fiber supervision the way a floating promise would.
+      Effect.runSync(
+        Queue.offer(
+          events,
+          buildRuntimeEvent(
+            {
+              provider: PROVIDER,
+              providerInstanceId: options.instanceId,
+              threadId: context.providerSession.threadId,
+            },
+            draft,
+          ),
+        ),
       );
+    };
+
+    const addItem = (context: AntigravityContext, turnId: TurnId, item: unknown) => {
+      context.turns.find((turn) => turn.id === turnId)?.items.push(item);
     };
 
     const getContext = (
@@ -110,7 +107,7 @@ export const makeAntigravityAdapter = (
       const existing = sessions.get(input.threadId);
       if (existing) return existing.providerSession;
       const cwd = input.cwd ?? process.cwd();
-      const model = input.modelSelection?.model ?? DEFAULT_MODEL;
+      const model = input.modelSelection?.model ?? DEFAULT_ANTIGRAVITY_MODEL;
       const providerSession: ProviderSession = {
         provider: PROVIDER,
         providerInstanceId: options.instanceId,
@@ -127,6 +124,7 @@ export const makeAntigravityAdapter = (
         activeTurnId: undefined,
         activeHandle: undefined,
         turns: [],
+        conversationStarted: false,
         interrupted: false,
         stopped: false,
       };
@@ -139,35 +137,68 @@ export const makeAntigravityAdapter = (
       return providerSession;
     });
 
-    const runTurn = (
-      context: AntigravityContext,
-      turnId: TurnId,
-      threadId: ThreadId,
-      prompt: string,
-      model: string,
-    ) =>
+    const runTurn = (context: AntigravityContext, turnId: TurnId, prompt: string, model: string) =>
       Effect.gen(function* () {
-        const assistantItemId = RuntimeItemId.make(crypto.randomUUID());
-        const command = ChildProcess.make(
+        const args = buildAntigravityArgs({
+          runtimeMode: context.providerSession.runtimeMode,
+          model,
+          prompt,
+          resumeConversation: context.conversationStarted,
+        });
+        const environment = options.environment;
+        const spawnCommand = yield* resolveSpawnCommand(
           binaryPath,
-          [
-            "--new-project",
-            "--dangerously-skip-permissions",
-            "--model",
-            resolveCliModel(model),
-            "-p",
-            prompt,
-          ],
-          {
-            cwd: context.providerSession.cwd ?? process.cwd(),
-            ...(options.environment ? { env: options.environment, extendEnv: false } : {}),
-          },
+          args,
+          environment ? { env: environment } : {},
         );
+        const command = ChildProcess.make(spawnCommand.command, spawnCommand.args, {
+          cwd: context.providerSession.cwd ?? process.cwd(),
+          shell: spawnCommand.shell,
+          ...(environment ? { env: environment, extendEnv: false } : {}),
+        });
         const handle = yield* spawner.spawn(command);
         context.activeHandle = handle;
-        const [stdoutText, stderrText, exitCode] = yield* Effect.all(
+        // An interrupt can land between `sendTurn` forking this fiber and the
+        // spawn resolving. Without this the turn reports itself interrupted
+        // while the CLI keeps running unsupervised.
+        if (context.interrupted) {
+          yield* Effect.orElseSucceed(handle.kill(), () => undefined);
+        }
+        context.conversationStarted = true;
+
+        let assistantItemId: RuntimeItemId | undefined;
+        let assistantText = "";
+        const [, stderrText, exitCode] = yield* Effect.all(
           [
-            Stream.decodeText(handle.stdout).pipe(Stream.mkString),
+            Stream.decodeText(handle.stdout).pipe(
+              Stream.runForEach((chunk) =>
+                Effect.sync(() => {
+                  if (context.interrupted) return;
+                  const delta = sanitizeCliOutput(chunk);
+                  if (!delta) return;
+                  if (assistantItemId === undefined) {
+                    assistantItemId = RuntimeItemId.make(NodeCrypto.randomUUID());
+                    emit(context, {
+                      type: "item.started",
+                      turnId,
+                      itemId: assistantItemId,
+                      payload: {
+                        itemType: "assistant_message",
+                        status: "inProgress",
+                        title: "Assistant",
+                      },
+                    });
+                  }
+                  assistantText += delta;
+                  emit(context, {
+                    type: "content.delta",
+                    turnId,
+                    itemId: assistantItemId,
+                    payload: { streamKind: "assistant_text", delta },
+                  });
+                }),
+              ),
+            ),
             Stream.decodeText(handle.stderr).pipe(Stream.mkString),
             handle.exitCode,
           ],
@@ -175,34 +206,48 @@ export const makeAntigravityAdapter = (
         );
         const interrupted = context.interrupted;
         const failed = !interrupted && exitCode !== 0;
-        const content = stdoutText.trim();
-        if (content && !failed && !interrupted) {
-          emit(context, {
-            type: "item.started",
-            turnId,
-            itemId: assistantItemId,
-            payload: { itemType: "assistant_message", status: "inProgress", title: "Assistant" },
-          });
-          emit(context, {
-            type: "content.delta",
-            turnId,
-            itemId: assistantItemId,
-            payload: { streamKind: "assistant_text", delta: content },
-          });
+        const content = assistantText.trim();
+        const stderr = sanitizeCliOutput(stderrText).trim();
+        // stderr is the CLI's error channel, but it stays empty on some exit
+        // paths — fall back to whatever it printed on stdout before giving up
+        // and reporting the bare exit code.
+        const errorMessage =
+          stderr || content || `Antigravity CLI exited with code ${exitCode.toString()}.`;
+
+        if (assistantItemId !== undefined) {
+          const status = failed ? "failed" : "completed";
           emit(context, {
             type: "item.completed",
             turnId,
             itemId: assistantItemId,
-            payload: { itemType: "assistant_message", status: "completed", title: "Assistant" },
+            payload: { itemType: "assistant_message", status, title: "Assistant" },
+          });
+          addItem(context, turnId, {
+            itemId: assistantItemId,
+            itemType: "assistant_message",
+            status,
+            text: content,
           });
         }
-        if (failed && stderrText.trim()) {
+        if (failed) {
           emit(context, {
             type: "runtime.error",
             turnId,
-            payload: { message: stderrText.trim(), class: "provider_error" },
+            payload: { message: errorMessage, class: "provider_error" },
           });
+        } else if (!interrupted) {
+          if (stderr) {
+            emit(context, { type: "runtime.warning", turnId, payload: { message: stderr } });
+          }
+          if (!content) {
+            emit(context, {
+              type: "runtime.warning",
+              turnId,
+              payload: { message: "Antigravity CLI produced no output for this turn." },
+            });
+          }
         }
+
         context.activeHandle = undefined;
         context.activeTurnId = undefined;
         context.providerSession = {
@@ -210,12 +255,7 @@ export const makeAntigravityAdapter = (
           status: failed ? "error" : "ready",
           activeTurnId: undefined,
           updatedAt: now(),
-          ...(failed
-            ? {
-                lastError:
-                  stderrText.trim() || `Antigravity CLI exited with code ${exitCode.toString()}.`,
-              }
-            : {}),
+          ...(failed ? { lastError: errorMessage } : {}),
         };
         emit(context, {
           type: "turn.completed",
@@ -223,11 +263,7 @@ export const makeAntigravityAdapter = (
           payload: interrupted
             ? { state: "interrupted" }
             : failed
-              ? {
-                  state: "failed",
-                  errorMessage:
-                    stderrText.trim() || `Antigravity CLI exited with code ${exitCode.toString()}.`,
-                }
+              ? { state: "failed", errorMessage }
               : { state: "completed" },
         });
       }).pipe(
@@ -260,6 +296,12 @@ export const makeAntigravityAdapter = (
           operation: "sendTurn",
           issue: "Antigravity session is stopped.",
         });
+      if (input.attachments?.length)
+        return yield* new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "sendTurn",
+          issue: "Antigravity CLI print mode cannot receive attachments.",
+        });
       const prompt = input.input?.trim();
       if (!prompt)
         return yield* new ProviderAdapterValidationError({
@@ -267,11 +309,18 @@ export const makeAntigravityAdapter = (
           operation: "sendTurn",
           issue: "A prompt is required.",
         });
-      const turnId = TurnId.make(crypto.randomUUID());
+      if (prompt.length > ANTIGRAVITY_MAX_PROMPT_CHARS)
+        return yield* new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "sendTurn",
+          issue: `Antigravity CLI prompts are limited to ${ANTIGRAVITY_MAX_PROMPT_CHARS.toString()} characters.`,
+        });
+      const turnId = TurnId.make(NodeCrypto.randomUUID());
       context.activeTurnId = turnId;
       context.interrupted = false;
       context.turns.push({ id: turnId, items: [] });
-      const model = input.modelSelection?.model ?? context.providerSession.model ?? DEFAULT_MODEL;
+      const model =
+        input.modelSelection?.model ?? context.providerSession.model ?? DEFAULT_ANTIGRAVITY_MODEL;
       context.providerSession = {
         ...context.providerSession,
         status: "running",
@@ -280,7 +329,7 @@ export const makeAntigravityAdapter = (
         updatedAt: now(),
       };
       emit(context, { type: "turn.started", turnId, payload: { model } });
-      yield* Effect.forkDetach(runTurn(context, turnId, input.threadId, prompt, model));
+      yield* Effect.forkDetach(runTurn(context, turnId, prompt, model));
       return { threadId: input.threadId, turnId };
     });
 
@@ -295,7 +344,8 @@ export const makeAntigravityAdapter = (
 
     return {
       provider: PROVIDER,
-      capabilities: { sessionModelSwitch: "unsupported" },
+      // Every turn is a fresh process, so the model can change per turn for free.
+      capabilities: { sessionModelSwitch: "in-session" },
       startSession,
       sendTurn,
       interruptTurn: (threadId) =>
@@ -333,10 +383,17 @@ export const makeAntigravityAdapter = (
         ),
       rollbackThread: (threadId, numTurns) =>
         getContext(threadId).pipe(
-          Effect.map((context) => {
-            context.turns.splice(Math.max(0, context.turns.length - Math.max(0, numTurns)));
-            return { threadId, turns: context.turns };
-          }),
+          Effect.flatMap((context) =>
+            rollbackTurns(context.turns, numTurns) !== undefined
+              ? Effect.succeed({ threadId, turns: context.turns })
+              : Effect.fail(
+                  new ProviderAdapterValidationError({
+                    provider: PROVIDER,
+                    operation: "rollbackThread",
+                    issue: "Invalid turn count.",
+                  }),
+                ),
+          ),
         ),
       stopAll: () =>
         Effect.forEach(Array.from(sessions.values()), stop, {
