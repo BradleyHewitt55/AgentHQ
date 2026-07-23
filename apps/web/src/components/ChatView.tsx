@@ -12,6 +12,7 @@ import {
   type ServerProvider,
   type ResolvedKeybindingsConfig,
   type ScopedThreadRef,
+  type Task,
   type ThreadId,
   type TurnId,
   type KeybindingCommand,
@@ -137,6 +138,10 @@ import { DiffWorkerPoolProvider } from "./DiffWorkerPoolProvider";
 import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import PlanSidebar from "./PlanSidebar";
+import { TaskBoardPanel } from "./tasks/TaskBoardPanel";
+import { TasksQuickAction } from "./tasks/TasksQuickAction";
+import { buildTaskHandoffPrompt, statusAfterHandoff } from "./tasks/taskPresentation";
+import { useProjectTasks } from "~/state/taskActions";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
 import { ChevronDownIcon, TriangleAlertIcon, WifiOffIcon } from "lucide-react";
 import { cn, randomHex } from "~/lib/utils";
@@ -2989,6 +2994,35 @@ function ChatViewContent(props: ChatViewProps) {
     },
     [activeProject, activeThreadRef],
   );
+  const addTasksSurface = useCallback(() => {
+    if (!activeThreadRef || !activeProject) return;
+    useRightPanelStore.getState().open(activeThreadRef, "tasks");
+  }, [activeProject, activeThreadRef]);
+  const projectTasks = useProjectTasks({
+    environmentId: activeProject?.environmentId ?? null,
+    projectId: activeProject?.id ?? null,
+    cwd: activeProjectCwd,
+  });
+  /**
+   * Hand a task to the agent: seed the composer with the task context, focus
+   * it, and move the task into `in_progress` (mirroring to GitHub when linked).
+   */
+  const passTaskToAgent = useCallback(
+    (task: Task) => {
+      composerRef.current?.insertTextAtEnd(buildTaskHandoffPrompt(task), {
+        ensureLeadingBoundary: true,
+      });
+      scheduleComposerFocus();
+      const nextStatus = statusAfterHandoff(task);
+      void projectTasks.updateTask(task.taskId, {
+        status: nextStatus,
+        ...(activeThreadId ? { threadId: activeThreadId } : {}),
+        // Only tasks already filed as issues need their board column mirrored.
+        pushToGitHub: task.github !== null,
+      });
+    },
+    [activeThreadId, composerRef, projectTasks, scheduleComposerFocus],
+  );
   const togglePreviewPanel = useCallback(() => {
     if (!activeThreadRef || !isPreviewSupportedInRuntime()) return;
     if (previewPanelOpen) {
@@ -5387,6 +5421,8 @@ function ChatViewContent(props: ChatViewProps) {
           initialGitScope={initialDiffPanelGitScope}
         />
       </Suspense>
+    ) : activeRightPanelSurface?.kind === "tasks" ? (
+      <TaskBoardPanel view={projectTasks} onPassToAgent={passTaskToAgent} />
     ) : activeRightPanelSurface?.kind === "plan" ? (
       <PlanSidebar
         activePlan={activePlan}
@@ -5471,6 +5507,15 @@ function ChatViewContent(props: ChatViewProps) {
             onAddProjectScript={saveProjectScript}
             onUpdateProjectScript={updateProjectScript}
             onDeleteProjectScript={deleteProjectScript}
+            tasksSlot={
+              activeProject ? (
+                <TasksQuickAction
+                  view={projectTasks}
+                  onPassToAgent={passTaskToAgent}
+                  onOpenBoard={addTasksSurface}
+                />
+              ) : null
+            }
           />
         </header>
 

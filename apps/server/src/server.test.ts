@@ -107,6 +107,7 @@ import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
 import * as GitWorkflowService from "./git/GitWorkflowService.ts";
 import * as ReviewService from "./review/ReviewService.ts";
 import * as SourceControlRepositoryService from "./sourceControl/SourceControlRepositoryService.ts";
+import * as ProjectTaskService from "./task/ProjectTaskService.ts";
 import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import * as CloudManagedEndpointRuntime from "./cloud/ManagedEndpointRuntime.ts";
@@ -332,6 +333,7 @@ const buildAppUnderTest = (options?: {
     sourceControlRepositoryService?: Partial<
       SourceControlRepositoryService.SourceControlRepositoryService["Service"]
     >;
+    projectTaskService?: Partial<ProjectTaskService.ProjectTaskService["Service"]>;
     reviewService?: Partial<ReviewService.ReviewService["Service"]>;
     vcsStatusBroadcaster?: Partial<VcsStatusBroadcaster.VcsStatusBroadcaster["Service"]>;
     projectSetupScriptRunner?: Partial<
@@ -641,9 +643,15 @@ const buildAppUnderTest = (options?: {
       Layer.provide(reviewLayer),
       Layer.provide(vcsProvisioningLayer),
       Layer.provide(
-        Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({
-          ...options?.layers?.sourceControlRepositoryService,
-        }),
+        Layer.mergeAll(
+          Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({
+            ...options?.layers?.sourceControlRepositoryService,
+          }),
+          Layer.mock(ProjectTaskService.ProjectTaskService)({
+            list: () => Effect.succeed({ tasks: [] }),
+            ...options?.layers?.projectTaskService,
+          }),
+        ),
       ),
       Layer.provideMerge(vcsStatusBroadcasterLayer),
       Layer.provide(

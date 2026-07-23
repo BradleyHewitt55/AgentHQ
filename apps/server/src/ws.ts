@@ -103,6 +103,7 @@ import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as SourceControlDiscovery from "./sourceControl/SourceControlDiscovery.ts";
 import * as SourceControlRepositoryService from "./sourceControl/SourceControlRepositoryService.ts";
+import * as ProjectTaskService from "./task/ProjectTaskService.ts";
 import * as AzureDevOpsCli from "./sourceControl/AzureDevOpsCli.ts";
 import * as BitbucketApi from "./sourceControl/BitbucketApi.ts";
 import * as GitHubCli from "./sourceControl/GitHubCli.ts";
@@ -316,6 +317,13 @@ const RPC_REQUIRED_SCOPE = new Map<string, AuthEnvironmentScope>([
   [WS_METHODS.projectsReadFile, AuthOrchestrationReadScope],
   [WS_METHODS.projectsSearchEntries, AuthOrchestrationReadScope],
   [WS_METHODS.projectsWriteFile, AuthOrchestrationOperateScope],
+  [WS_METHODS.tasksList, AuthOrchestrationReadScope],
+  [WS_METHODS.subscribeTasks, AuthOrchestrationReadScope],
+  [WS_METHODS.tasksCreate, AuthOrchestrationOperateScope],
+  [WS_METHODS.tasksUpdate, AuthOrchestrationOperateScope],
+  [WS_METHODS.tasksDelete, AuthOrchestrationOperateScope],
+  [WS_METHODS.tasksPromote, AuthOrchestrationOperateScope],
+  [WS_METHODS.tasksSync, AuthOrchestrationOperateScope],
   [WS_METHODS.shellOpenInEditor, AuthOrchestrationOperateScope],
   [WS_METHODS.filesystemBrowse, AuthOrchestrationReadScope],
   [WS_METHODS.assetsCreateUrl, AuthOrchestrationReadScope],
@@ -443,6 +451,7 @@ const makeWsRpcLayer = (
       );
       const sourceControlRepositories =
         yield* SourceControlRepositoryService.SourceControlRepositoryService;
+      const projectTasks = yield* ProjectTaskService.ProjectTaskService;
       const bootstrapCredentials = yield* PairingGrantStore.PairingGrantStore;
       const sessions = yield* SessionStore.SessionStore;
       const processDiagnostics = yield* ProcessDiagnostics.ProcessDiagnostics;
@@ -1678,6 +1687,34 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "workspace" },
           ),
+        [WS_METHODS.tasksList]: (input) =>
+          observeRpcEffect(WS_METHODS.tasksList, projectTasks.list(input), {
+            "rpc.aggregate": "tasks",
+          }),
+        [WS_METHODS.subscribeTasks]: (input) =>
+          observeRpcStream(WS_METHODS.subscribeTasks, projectTasks.changes(input), {
+            "rpc.aggregate": "tasks",
+          }),
+        [WS_METHODS.tasksCreate]: (input) =>
+          observeRpcEffect(WS_METHODS.tasksCreate, projectTasks.create(input), {
+            "rpc.aggregate": "tasks",
+          }),
+        [WS_METHODS.tasksUpdate]: (input) =>
+          observeRpcEffect(WS_METHODS.tasksUpdate, projectTasks.update(input), {
+            "rpc.aggregate": "tasks",
+          }),
+        [WS_METHODS.tasksDelete]: (input) =>
+          observeRpcEffect(WS_METHODS.tasksDelete, projectTasks.remove(input), {
+            "rpc.aggregate": "tasks",
+          }),
+        [WS_METHODS.tasksPromote]: (input) =>
+          observeRpcEffect(WS_METHODS.tasksPromote, projectTasks.promote(input), {
+            "rpc.aggregate": "tasks",
+          }),
+        [WS_METHODS.tasksSync]: (input) =>
+          observeRpcEffect(WS_METHODS.tasksSync, projectTasks.sync(input), {
+            "rpc.aggregate": "tasks",
+          }),
         [WS_METHODS.shellOpenInEditor]: (input) =>
           observeRpcEffect(WS_METHODS.shellOpenInEditor, externalLauncher.launchEditor(input), {
             "rpc.aggregate": "workspace",
