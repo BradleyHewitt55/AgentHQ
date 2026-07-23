@@ -69,6 +69,9 @@ import * as GitWorkflowService from "./git/GitWorkflowService.ts";
 import * as ReviewService from "./review/ReviewService.ts";
 import * as SourceControlProviderRegistry from "./sourceControl/SourceControlProviderRegistry.ts";
 import * as SourceControlRepositoryService from "./sourceControl/SourceControlRepositoryService.ts";
+import * as GitHubTaskSync from "./task/GitHubTaskSync.ts";
+import * as ProjectTaskService from "./task/ProjectTaskService.ts";
+import { ProjectTaskRepositoryLive } from "./persistence/Layers/ProjectTasks.ts";
 import * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts";
 import { ObservabilityLive } from "./observability/Layers/Observability.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
@@ -219,6 +222,14 @@ const SourceControlRepositoryServiceLayerLive = SourceControlRepositoryService.l
   Layer.provideMerge(SourceControlProviderRegistryLayerLive),
 );
 
+// Tasks are stored locally and only reach GitHub through the `gh` CLI, so this
+// depends on persistence plus the GitHub provider CLI rather than the full
+// source control registry.
+const ProjectTaskLayerLive = ProjectTaskService.layer.pipe(
+  Layer.provide(GitHubTaskSync.layer.pipe(Layer.provide(GitHubCli.layer))),
+  Layer.provide(ProjectTaskRepositoryLive),
+);
+
 const ReviewLayerLive = ReviewService.layer.pipe(
   Layer.provideMerge(GitVcsDriver.layer),
   Layer.provideMerge(VcsDriverRegistryLayerLive),
@@ -292,7 +303,7 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   Layer.provideMerge(CheckpointingLayerLive),
   Layer.provideMerge(SourceControlProviderRegistryLayerLive),
   Layer.provideMerge(GitLayerLive),
-  Layer.provideMerge(VcsLayerLive),
+  Layer.provideMerge(Layer.mergeAll(VcsLayerLive, ProjectTaskLayerLive)),
   Layer.provideMerge(ProviderRuntimeLayerLive),
   Layer.provideMerge(Layer.mergeAll(TerminalLayerLive, PreviewLayerLive)),
   Layer.provideMerge(PersistenceLayerLive),

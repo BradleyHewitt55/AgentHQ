@@ -79,6 +79,19 @@ import {
   ProjectWriteFileResult,
 } from "./project.ts";
 import {
+  TaskCreateInput,
+  TaskDeleteInput,
+  TaskListInput,
+  TaskListResult,
+  TaskMutationResult,
+  TaskPromoteInput,
+  TaskStoreError,
+  TaskSyncError,
+  TaskSyncInput,
+  TaskSyncResult,
+  TaskUpdateInput,
+} from "./task.ts";
+import {
   TerminalAttachInput,
   TerminalAttachStreamEvent,
   TerminalClearInput,
@@ -156,6 +169,15 @@ export const WS_METHODS = {
   projectsReadFile: "projects.readFile",
   projectsSearchEntries: "projects.searchEntries",
   projectsWriteFile: "projects.writeFile",
+
+  // Project task methods
+  tasksList: "tasks.list",
+  subscribeTasks: "tasks.subscribe",
+  tasksCreate: "tasks.create",
+  tasksUpdate: "tasks.update",
+  tasksDelete: "tasks.delete",
+  tasksPromote: "tasks.promote",
+  tasksSync: "tasks.sync",
 
   // Shell methods
   shellOpenInEditor: "shell.openInEditor",
@@ -393,6 +415,49 @@ export const WsProjectsWriteFileRpc = Rpc.make(WS_METHODS.projectsWriteFile, {
   payload: ProjectWriteFileInput,
   success: ProjectWriteFileResult,
   error: Schema.Union([ProjectWriteFileError, EnvironmentAuthorizationError]),
+});
+
+export const WsTasksListRpc = Rpc.make(WS_METHODS.tasksList, {
+  payload: TaskListInput,
+  success: TaskListResult,
+  error: Schema.Union([TaskStoreError, EnvironmentAuthorizationError]),
+});
+
+export const WsSubscribeTasksRpc = Rpc.make(WS_METHODS.subscribeTasks, {
+  payload: TaskListInput,
+  success: TaskListResult,
+  error: Schema.Union([TaskStoreError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+
+export const WsTasksCreateRpc = Rpc.make(WS_METHODS.tasksCreate, {
+  payload: TaskCreateInput,
+  success: TaskMutationResult,
+  error: Schema.Union([TaskStoreError, TaskSyncError, EnvironmentAuthorizationError]),
+});
+
+export const WsTasksUpdateRpc = Rpc.make(WS_METHODS.tasksUpdate, {
+  payload: TaskUpdateInput,
+  success: TaskMutationResult,
+  error: Schema.Union([TaskStoreError, TaskSyncError, EnvironmentAuthorizationError]),
+});
+
+export const WsTasksDeleteRpc = Rpc.make(WS_METHODS.tasksDelete, {
+  payload: TaskDeleteInput,
+  success: Schema.Void,
+  error: Schema.Union([TaskStoreError, EnvironmentAuthorizationError]),
+});
+
+export const WsTasksPromoteRpc = Rpc.make(WS_METHODS.tasksPromote, {
+  payload: TaskPromoteInput,
+  success: TaskMutationResult,
+  error: Schema.Union([TaskStoreError, TaskSyncError, EnvironmentAuthorizationError]),
+});
+
+export const WsTasksSyncRpc = Rpc.make(WS_METHODS.tasksSync, {
+  payload: TaskSyncInput,
+  success: TaskSyncResult,
+  error: Schema.Union([TaskStoreError, TaskSyncError, EnvironmentAuthorizationError]),
 });
 
 export const WsShellOpenInEditorRpc = Rpc.make(WS_METHODS.shellOpenInEditor, {
@@ -722,6 +787,13 @@ export const WsRpcGroup = RpcGroup.make(
   WsProjectsReadFileRpc,
   WsProjectsSearchEntriesRpc,
   WsProjectsWriteFileRpc,
+  WsTasksListRpc,
+  WsSubscribeTasksRpc,
+  WsTasksCreateRpc,
+  WsTasksUpdateRpc,
+  WsTasksDeleteRpc,
+  WsTasksPromoteRpc,
+  WsTasksSyncRpc,
   WsShellOpenInEditorRpc,
   WsFilesystemBrowseRpc,
   WsAssetsCreateUrlRpc,
