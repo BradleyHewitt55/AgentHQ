@@ -8,7 +8,7 @@ import * as NodeSqliteClient from "../NodeSqliteClient.ts";
 
 const layer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
 
-layer("035_RepairProjectionThreadsSettled", (it) => {
+layer("036_RepairProjectionThreadsSettled", (it) => {
   it.effect("adds settled columns when migration 33 was recorded by conflicting work", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
