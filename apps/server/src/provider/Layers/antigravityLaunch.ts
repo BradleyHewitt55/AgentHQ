@@ -63,6 +63,7 @@ export function runtimeModeToAntigravityArgs(mode: RuntimeMode): ReadonlyArray<s
     case "approval-required":
       return ["--mode", "plan", "--sandbox"];
     case "auto-accept-edits":
+    case "auto":
       return ["--mode", "accept-edits", "--sandbox"];
     case "full-access":
       return ["--dangerously-skip-permissions"];
