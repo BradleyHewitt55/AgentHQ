@@ -9,8 +9,8 @@
  */
 
 import * as Migrator from "effect/unstable/sql/Migrator";
-import * as Layer from "effect/Layer";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 
 // Import all migrations statically
 import Migration0001 from "./Migrations/001_OrchestrationEvents.ts";
@@ -50,6 +50,7 @@ import Migration0034 from "./Migrations/034_ProjectionThreadsSnoozed.ts";
 import Migration0035 from "./Migrations/035_ProjectTasks.ts";
 import Migration0036 from "./Migrations/036_RepairProjectionThreadsSettled.ts";
 import Migration0037 from "./Migrations/037_RepairProjectionThreadsSnoozed.ts";
+import Migration0038 from "./Migrations/038_ProjectionThreadsPinned.ts";
 import Migration0039 from "./Migrations/039_ProjectionThreadTitleRegeneration.ts";
 
 /**
@@ -100,8 +101,11 @@ export const migrationEntries = [
   [35, "ProjectTasks", Migration0035],
   [36, "RepairProjectionThreadsSettled", Migration0036],
   [37, "RepairProjectionThreadsSnoozed", Migration0037],
+  [38, "ProjectionThreadsPinned", Migration0038],
   [39, "ProjectionThreadTitleRegeneration", Migration0039],
 ] as const;
+
+export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
 
 export const makeMigrationLoader = (throughId?: number) =>
   Migrator.fromRecord(
