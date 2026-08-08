@@ -687,6 +687,30 @@ export function findLatestProposedPlan(
   return toLatestProposedPlanState(latestPlan);
 }
 
+export function findSidebarProposedPlan(input: {
+  threads: ReadonlyArray<Pick<Thread, "id" | "proposedPlans">>;
+  latestTurn: Pick<OrchestrationLatestTurn, "turnId" | "sourceProposedPlan"> | null;
+  latestTurnSettled: boolean;
+  threadId: ThreadId | string | null | undefined;
+}): LatestProposedPlanState | null {
+  const activeThreadPlans =
+    input.threads.find((thread) => thread.id === input.threadId)?.proposedPlans ?? [];
+
+  if (!input.latestTurnSettled) {
+    const sourceProposedPlan = input.latestTurn?.sourceProposedPlan;
+    if (sourceProposedPlan) {
+      const sourcePlan = input.threads
+        .find((thread) => thread.id === sourceProposedPlan.threadId)
+        ?.proposedPlans.find((plan) => plan.id === sourceProposedPlan.planId);
+      if (sourcePlan) {
+        return toLatestProposedPlanState(sourcePlan);
+      }
+    }
+  }
+
+  return findLatestProposedPlan(activeThreadPlans, input.latestTurn?.turnId ?? null);
+}
+
 export function hasActionableProposedPlan(
   proposedPlan: LatestProposedPlanState | Pick<ProposedPlan, "implementedAt"> | null,
 ): boolean {
