@@ -584,6 +584,41 @@ export function sortSettledThreadsForSidebar<
   );
 }
 
+// Sidebar v2 reuses the same static ordering as v1: pinned and active blocks
+// keep creation order (newest on top, activity never reorders), and the
+// settled tail orders by when the work ended.
+export function sortThreadsForSidebarV2<
+  T extends { readonly id: string; readonly createdAt: string },
+>(threads: readonly T[]): T[] {
+  return sortThreadsForSidebar(threads);
+}
+
+export function sortSettledThreadsForSidebarV2<
+  T extends SettledTimestampInput & { readonly id: string },
+>(threads: readonly T[]): T[] {
+  return sortSettledThreadsForSidebar(threads);
+}
+
+type SidebarV2StatusInput = Pick<
+  SidebarThreadSummary,
+  "hasPendingApprovals" | "hasPendingUserInput" | "session"
+>;
+
+export type SidebarV2ThreadStatus = "approval" | "input" | "working" | "failed" | "ready";
+
+/** V2 status: a thread must be "act now" (approval/input), "in motion"
+    (working), or "broken" (failed); everything else rests as ready. Same
+    precedence as the mobile list so both surfaces read a thread alike. */
+export function resolveSidebarV2Status(thread: SidebarV2StatusInput): SidebarV2ThreadStatus {
+  if (thread.hasPendingApprovals) return "approval";
+  if (thread.hasPendingUserInput) return "input";
+  if (thread.session?.status === "running" || thread.session?.status === "starting") {
+    return "working";
+  }
+  if (thread.session?.status === "error") return "failed";
+  return "ready";
+}
+
 /** The timestamp a working thread's elapsed label counts from: the running
     turn's start (request time until adoption), falling back to the session's
     last transition when the turn projection lags behind. Malformed

@@ -23,7 +23,9 @@ import type {
   ProjectSearchContentsResult,
   ProjectSearchEntriesResult,
 } from "@t3tools/contracts";
+import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
 
+const WORKSPACE_INDEX_LIST_PROBE_PAGE_SIZE = 1;
 const WORKSPACE_INDEX_MAX_ENTRIES = 25_000;
 const WORKSPACE_INDEX_PAGE_SIZE = WORKSPACE_INDEX_MAX_ENTRIES + 2;
 const WORKSPACE_INDEX_SCAN_TIMEOUT = "15 seconds";
@@ -111,6 +113,7 @@ export class WorkspaceSearchIndex extends Context.Service<
       query: string,
       limit: number,
       kind?: ProjectEntryKind,
+      imageOnly?: boolean,
     ) => Effect.Effect<ProjectSearchEntriesResult, WorkspaceSearchIndexSearchFailed>;
     readonly searchContents: (
       input: Omit<ProjectSearchContentsInput, "cwd">,
@@ -157,15 +160,18 @@ function toDirectoryEntry(item: DirItem): ProjectEntry | null {
   return normalizedPath ? { path: normalizedPath, kind: "directory" } : null;
 }
 
-function mapFileSearchResult(result: SearchResult, limit: number): ProjectSearchEntriesResult {
+function mapFileSearchResult(
+  result: SearchResult,
+  limit: number,
+  imageOnly = false,
+): ProjectSearchEntriesResult {
+  const entries = result.items.flatMap((item) => {
+    const entry = toFileEntry(item);
+    return entry && (!imageOnly || isWorkspaceImagePreviewPath(entry.path)) ? [entry] : [];
+  });
   return {
-    entries: result.items
-      .flatMap((item) => {
-        const entry = toFileEntry(item);
-        return entry ? [entry] : [];
-      })
-      .slice(0, limit),
-    truncated: result.totalMatched > limit,
+    entries: entries.slice(0, limit),
+    truncated: entries.length > limit || result.totalMatched > result.items.length,
   };
 }
 
@@ -278,7 +284,7 @@ function isWholeWordRange(
   return leftIsBoundary && rightIsBoundary;
 }
 
-function withDirectoryAncestors(entries: ReadonlyArray<ProjectEntry>): ProjectEntry[] {
+export function withDirectoryAncestors(entries: ReadonlyArray<ProjectEntry>): ProjectEntry[] {
   const entryByPath = new Map(entries.map((entry) => [entry.path, entry]));
   for (const entry of entries) {
     let parentPath = parentPathOf(entry.path);
@@ -428,30 +434,35 @@ export const make = Effect.fn("WorkspaceSearchIndex.make")(function* (
 
   const list: WorkspaceSearchIndex["Service"]["list"] = Effect.fn("WorkspaceSearchIndex.list")(
     function* () {
-      const result = yield* runSearch("", WORKSPACE_INDEX_PAGE_SIZE, "mixedSearch", () =>
-        finder.mixedSearch("", { pageSize: WORKSPACE_INDEX_PAGE_SIZE }),
+      // Probe first and page with the reported total: the file tree is fed
+      // the complete workspace, so nothing may fall off the end of the page.
+      const probe = yield* runSearch("", WORKSPACE_INDEX_LIST_PROBE_PAGE_SIZE, "mixedSearch", () =>
+        finder.mixedSearch("", { pageSize: WORKSPACE_INDEX_LIST_PROBE_PAGE_SIZE }),
       );
-      const mapped = mapMixedSearchResult(result, WORKSPACE_INDEX_MAX_ENTRIES);
+      const pageSize = Math.max(1, probe.totalMatched);
+      const result = yield* runSearch("", pageSize, "mixedSearch", () =>
+        finder.mixedSearch("", { pageSize }),
+      );
+      const mapped = mapMixedSearchResult(result, pageSize);
       const sortedEntries = withDirectoryAncestors(mapped.entries).toSorted((left, right) =>
         left.path.localeCompare(right.path),
       );
-      const entries = sortedEntries.slice(0, WORKSPACE_INDEX_MAX_ENTRIES);
       return {
-        entries,
-        truncated: mapped.truncated || entries.length < sortedEntries.length,
+        entries: sortedEntries,
+        truncated: false,
       };
     },
   );
 
   const search: WorkspaceSearchIndex["Service"]["search"] = Effect.fn(
     "WorkspaceSearchIndex.search",
-  )(function* (query, limit, kind) {
-    const pageSize = Math.max(1, limit + 1);
-    if (kind === "file") {
+  )(function* (query, limit, kind, imageOnly) {
+    const pageSize = imageOnly ? WORKSPACE_INDEX_PAGE_SIZE : Math.max(1, limit + 1);
+    if (kind === "file" || imageOnly) {
       const result = yield* runSearch(query, pageSize, "fileSearch", () =>
         finder.fileSearch(query, { pageSize }),
       );
-      return mapFileSearchResult(result, limit);
+      return mapFileSearchResult(result, limit, imageOnly);
     }
     if (kind === "directory") {
       const result = yield* runSearch(query, pageSize, "directorySearch", () =>

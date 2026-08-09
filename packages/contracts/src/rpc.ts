@@ -73,9 +73,18 @@ import {
   RelayClientStatusSchema,
 } from "./relayClient.ts";
 import {
+  ProjectDeleteError,
+  ProjectDeleteInput,
+  ProjectDeleteResult,
   ProjectListEntriesError,
   ProjectListEntriesInput,
   ProjectListEntriesResult,
+  ProjectMkdirError,
+  ProjectMkdirInput,
+  ProjectMkdirResult,
+  ProjectMoveError,
+  ProjectMoveInput,
+  ProjectMoveResult,
   ProjectReadFileError,
   ProjectReadFileInput,
   ProjectReadFileResult,
@@ -165,6 +174,7 @@ import {
   ResourceTelemetryRetryResult,
   ResourceTelemetrySnapshot,
 } from "./resourceTelemetry.ts";
+import { UsageReadError, UsageSummary, UsageSummaryInput } from "./usage.ts";
 import { ServerSettings, ServerSettingsError, ServerSettingsPatch } from "./settings.ts";
 import {
   SourceControlCloneRepositoryInput,
@@ -188,6 +198,9 @@ export const WS_METHODS = {
   projectsSearchContents: "projects.searchContents",
   projectsSearchEntries: "projects.searchEntries",
   projectsWriteFile: "projects.writeFile",
+  projectsMkdir: "projects.mkdir",
+  projectsMove: "projects.move",
+  projectsDelete: "projects.delete",
 
   // Project task methods
   tasksList: "tasks.list",
@@ -266,6 +279,7 @@ export const WS_METHODS = {
   serverReportClientActivity: "server.reportClientActivity",
   serverReportHostPowerState: "server.reportHostPowerState",
   serverGetBackgroundPolicy: "server.getBackgroundPolicy",
+  serverGetUsageSummary: "server.getUsageSummary",
 
   // Cloud environment methods
   cloudGetRelayClientStatus: "cloud.getRelayClientStatus",
@@ -403,6 +417,12 @@ export const WsServerRetryResourceTelemetryRpc = Rpc.make(WS_METHODS.serverRetry
   error: EnvironmentAuthorizationError,
 });
 
+export const WsServerGetUsageSummaryRpc = Rpc.make(WS_METHODS.serverGetUsageSummary, {
+  payload: UsageSummaryInput,
+  success: UsageSummary,
+  error: Schema.Union([EnvironmentAuthorizationError, UsageReadError]),
+});
+
 export const WsServerSignalProcessRpc = Rpc.make(WS_METHODS.serverSignalProcess, {
   payload: ServerSignalProcessInput,
   success: ServerSignalProcessResult,
@@ -490,6 +510,24 @@ export const WsProjectsWriteFileRpc = Rpc.make(WS_METHODS.projectsWriteFile, {
   payload: ProjectWriteFileInput,
   success: ProjectWriteFileResult,
   error: Schema.Union([ProjectWriteFileError, EnvironmentAuthorizationError]),
+});
+
+export const WsProjectsMkdirRpc = Rpc.make(WS_METHODS.projectsMkdir, {
+  payload: ProjectMkdirInput,
+  success: ProjectMkdirResult,
+  error: Schema.Union([ProjectMkdirError, EnvironmentAuthorizationError]),
+});
+
+export const WsProjectsMoveRpc = Rpc.make(WS_METHODS.projectsMove, {
+  payload: ProjectMoveInput,
+  success: ProjectMoveResult,
+  error: Schema.Union([ProjectMoveError, EnvironmentAuthorizationError]),
+});
+
+export const WsProjectsDeleteRpc = Rpc.make(WS_METHODS.projectsDelete, {
+  payload: ProjectDeleteInput,
+  success: ProjectDeleteResult,
+  error: Schema.Union([ProjectDeleteError, EnvironmentAuthorizationError]),
 });
 
 export const WsTasksListRpc = Rpc.make(WS_METHODS.tasksList, {
@@ -884,6 +922,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetProcessResourceHistoryRpc,
   WsServerGetResourceTelemetryHistoryRpc,
   WsServerRetryResourceTelemetryRpc,
+  WsServerGetUsageSummaryRpc,
   WsServerSignalProcessRpc,
   WsServerReportClientActivityRpc,
   WsServerReportHostPowerStateRpc,
@@ -894,6 +933,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsSourceControlCloneRepositoryRpc,
   WsSourceControlPublishRepositoryRpc,
   WsProjectsListEntriesRpc,
+  WsProjectsMkdirRpc,
+  WsProjectsMoveRpc,
+  WsProjectsDeleteRpc,
   WsProjectsReadFileRpc,
   WsProjectsSearchContentsRpc,
   WsProjectsSearchEntriesRpc,

@@ -21,12 +21,16 @@ export const ProjectSearchEntriesInput = Schema.Struct({
   query: TrimmedString.check(Schema.isMaxLength(256)),
   limit: PositiveInt.check(Schema.isLessThanOrEqualTo(PROJECT_SEARCH_ENTRIES_MAX_LIMIT)),
   kind: Schema.optional(ProjectEntryKind),
+  imageOnly: Schema.optional(Schema.Boolean),
 });
 export type ProjectSearchEntriesInput = typeof ProjectSearchEntriesInput.Type;
 
 export const ProjectEntry = Schema.Struct({
   path: TrimmedNonEmptyString,
   kind: ProjectEntryKind,
+  // Present only when the entry is excluded by gitignore. The file tree
+  // renders ignored entries dimmed; held back in search-style lists.
+  ignored: Schema.optional(Schema.Boolean),
 });
 export type ProjectEntry = typeof ProjectEntry.Type;
 
@@ -209,6 +213,8 @@ export const ProjectFileFailure = Schema.Literals([
   "resolved_path_outside_root",
   "path_not_file",
   "binary_file",
+  "source_not_found",
+  "target_already_exists",
   "operation_failed",
 ]);
 export type ProjectFileFailure = typeof ProjectFileFailure.Type;
@@ -222,6 +228,8 @@ export const ProjectFileOperation = Schema.Literals([
   "close",
   "make-directory",
   "write-file",
+  "rename",
+  "remove",
 ]);
 export type ProjectFileOperation = typeof ProjectFileOperation.Type;
 
@@ -294,6 +302,127 @@ export class ProjectWriteFileError extends Schema.TaggedErrorClass<ProjectWriteF
       message:
         decodedProjectErrorMessage(props) ??
         `Failed to write workspace file '${props.relativePath}' in '${props.cwd}'.`,
+    } as any);
+  }
+}
+
+export const ProjectMkdirInput = Schema.Struct({
+  cwd: TrimmedNonEmptyString,
+  relativePath: TrimmedNonEmptyString.check(Schema.isMaxLength(PROJECT_WRITE_FILE_PATH_MAX_LENGTH)),
+});
+export type ProjectMkdirInput = typeof ProjectMkdirInput.Type;
+
+export const ProjectMkdirResult = Schema.Struct({
+  relativePath: TrimmedNonEmptyString,
+});
+export type ProjectMkdirResult = typeof ProjectMkdirResult.Type;
+
+export class ProjectMkdirError extends Schema.TaggedErrorClass<ProjectMkdirError>()(
+  "ProjectMkdirError",
+  {
+    cwd: Schema.optional(TrimmedNonEmptyString),
+    relativePath: Schema.optional(TrimmedNonEmptyString),
+    failure: Schema.optional(ProjectFileFailure),
+    resolvedPath: Schema.optional(TrimmedNonEmptyString),
+    resolvedWorkspaceRoot: Schema.optional(TrimmedNonEmptyString),
+    operation: Schema.optional(ProjectFileOperation),
+    operationPath: Schema.optional(TrimmedNonEmptyString),
+    message: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  // @effect-diagnostics-next-line overriddenSchemaConstructor:off
+  constructor(props: ProjectFileFailureContext) {
+    super({
+      ...props,
+      message:
+        decodedProjectErrorMessage(props) ??
+        `Failed to create workspace directory '${props.relativePath}' in '${props.cwd}'.`,
+    } as any);
+  }
+}
+
+/**
+ * One operation for both move and rename: `fromPath` is the current
+ * workspace-relative location, `toPath` the destination (same parent for a
+ * plain rename, a different folder for a move).
+ */
+export const ProjectMoveInput = Schema.Struct({
+  cwd: TrimmedNonEmptyString,
+  fromPath: TrimmedNonEmptyString.check(Schema.isMaxLength(PROJECT_WRITE_FILE_PATH_MAX_LENGTH)),
+  toPath: TrimmedNonEmptyString.check(Schema.isMaxLength(PROJECT_WRITE_FILE_PATH_MAX_LENGTH)),
+});
+export type ProjectMoveInput = typeof ProjectMoveInput.Type;
+
+export const ProjectMoveResult = Schema.Struct({
+  fromPath: TrimmedNonEmptyString,
+  toPath: TrimmedNonEmptyString,
+});
+export type ProjectMoveResult = typeof ProjectMoveResult.Type;
+
+export class ProjectMoveError extends Schema.TaggedErrorClass<ProjectMoveError>()(
+  "ProjectMoveError",
+  {
+    cwd: Schema.optional(TrimmedNonEmptyString),
+    fromPath: Schema.optional(TrimmedNonEmptyString),
+    toPath: Schema.optional(TrimmedNonEmptyString),
+    failure: Schema.optional(ProjectFileFailure),
+    resolvedPath: Schema.optional(TrimmedNonEmptyString),
+    resolvedWorkspaceRoot: Schema.optional(TrimmedNonEmptyString),
+    operation: Schema.optional(ProjectFileOperation),
+    operationPath: Schema.optional(TrimmedNonEmptyString),
+    message: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  // @effect-diagnostics-next-line overriddenSchemaConstructor:off
+  constructor(
+    props: Omit<ProjectFileFailureContext, "relativePath"> & {
+      readonly fromPath: string;
+      readonly toPath: string;
+    },
+  ) {
+    super({
+      ...props,
+      message:
+        decodedProjectErrorMessage(props) ??
+        `Failed to move workspace entry '${props.fromPath}' to '${props.toPath}' in '${props.cwd}'.`,
+    } as any);
+  }
+}
+
+export const ProjectDeleteInput = Schema.Struct({
+  cwd: TrimmedNonEmptyString,
+  relativePath: TrimmedNonEmptyString.check(Schema.isMaxLength(PROJECT_WRITE_FILE_PATH_MAX_LENGTH)),
+});
+export type ProjectDeleteInput = typeof ProjectDeleteInput.Type;
+
+export const ProjectDeleteResult = Schema.Struct({
+  relativePath: TrimmedNonEmptyString,
+});
+export type ProjectDeleteResult = typeof ProjectDeleteResult.Type;
+
+export class ProjectDeleteError extends Schema.TaggedErrorClass<ProjectDeleteError>()(
+  "ProjectDeleteError",
+  {
+    cwd: Schema.optional(TrimmedNonEmptyString),
+    relativePath: Schema.optional(TrimmedNonEmptyString),
+    failure: Schema.optional(ProjectFileFailure),
+    resolvedPath: Schema.optional(TrimmedNonEmptyString),
+    resolvedWorkspaceRoot: Schema.optional(TrimmedNonEmptyString),
+    operation: Schema.optional(ProjectFileOperation),
+    operationPath: Schema.optional(TrimmedNonEmptyString),
+    message: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  // @effect-diagnostics-next-line overriddenSchemaConstructor:off
+  constructor(props: ProjectFileFailureContext) {
+    super({
+      ...props,
+      message:
+        decodedProjectErrorMessage(props) ??
+        `Failed to delete workspace entry '${props.relativePath}' in '${props.cwd}'.`,
     } as any);
   }
 }

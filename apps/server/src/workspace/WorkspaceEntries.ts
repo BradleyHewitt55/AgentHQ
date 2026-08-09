@@ -12,6 +12,7 @@ import * as Schema from "effect/Schema";
 import type {
   FilesystemBrowseInput,
   FilesystemBrowseResult,
+  ProjectEntry,
   ProjectListEntriesInput,
   ProjectListEntriesResult,
   ProjectSearchContentsInput,
@@ -23,6 +24,7 @@ import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { isExplicitRelativePath, isWindowsAbsolutePath } from "@t3tools/shared/path";
 import { normalizeSearchQuery } from "@t3tools/shared/searchRanking";
 
+import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as WorkspacePaths from "./WorkspacePaths.ts";
 import * as WorkspaceSearchIndex from "./WorkspaceSearchIndex.ts";
 
@@ -92,7 +94,7 @@ export class WorkspaceEntries extends Context.Service<
     ) => Effect.Effect<FilesystemBrowseResult, WorkspaceEntriesBrowseError>;
     readonly list: (
       input: ProjectListEntriesInput,
-    ) => Effect.Effect<ProjectListEntriesResult, WorkspaceEntriesError>;
+    ) => Effect.Effect<ProjectListEntriesResult, WorkspaceEntriesError, VcsProcess.VcsProcess>;
     readonly search: (
       input: ProjectSearchEntriesInput,
     ) => Effect.Effect<ProjectSearchEntriesResult, WorkspaceEntriesError>;
@@ -136,6 +138,48 @@ const resolveBrowseTarget = Effect.fn("WorkspaceEntries.resolveBrowseTarget")(fu
     });
   }
   return path.resolve(expandHomePath(input.cwd, path), input.partialPath);
+});
+
+// Entries git reports as ignored (`git ls-files -oi --exclude-standard`).
+// Workspaces without a repository (or without git installed) yield nothing.
+const GIT_IGNORED_MAX_OUTPUT_BYTES = 20 * 1024 * 1024;
+const listGitIgnoredEntries = Effect.fn("WorkspaceEntries.listGitIgnoredEntries")(function* (
+  cwd: string,
+): Effect.fn.Return<ReadonlyArray<ProjectEntry>, never, VcsProcess.VcsProcess> {
+  const vcsProcess = yield* VcsProcess.VcsProcess;
+  const result = yield* vcsProcess
+    .run({
+      operation: "WorkspaceEntries.listGitIgnoredEntries",
+      command: "git",
+      cwd,
+      // --directory collapses fully-ignored directories to a single line, so
+      // the merge carries git's own notion of which paths are ignored instead
+      // of enumerating every file inside (trailing-slash paths mark dirs).
+      args: ["ls-files", "-oi", "--exclude-standard", "--directory", "-z"],
+      allowNonZeroExit: true,
+      timeoutMs: 20_000,
+      maxOutputBytes: GIT_IGNORED_MAX_OUTPUT_BYTES,
+    })
+    .pipe(
+      Effect.orElseSucceed(() => ({
+        stdout: "",
+        stderr: "",
+        exitCode: 0,
+        stdoutTruncated: false,
+        stderrTruncated: false,
+      })),
+    );
+
+  const entries: ProjectEntry[] = [];
+  for (const rawPath of result.stdout.split("\0")) {
+    const isDirectory = rawPath.endsWith("/");
+    const path = isDirectory ? rawPath.slice(0, -1) : rawPath;
+    if (path.length === 0 || path.includes("\\")) {
+      continue;
+    }
+    entries.push({ path, kind: isDirectory ? "directory" : "file", ignored: true });
+  }
+  return entries;
 });
 
 export const make = Effect.gen(function* () {
@@ -245,7 +289,7 @@ export const make = Effect.gen(function* () {
       });
       return yield* Effect.gen(function* () {
         const searchIndex = yield* WorkspaceSearchIndex.WorkspaceSearchIndex;
-        return yield* searchIndex.search(normalizedQuery, input.limit, input.kind);
+        return yield* searchIndex.search(normalizedQuery, input.limit, input.kind, input.imageOnly);
       }).pipe(
         Effect.provide(
           workspaceSearchIndexes.get(
@@ -275,7 +319,7 @@ export const make = Effect.gen(function* () {
   const list: WorkspaceEntries["Service"]["list"] = Effect.fn("WorkspaceEntries.list")(
     function* (input) {
       const normalizedCwd = yield* normalizeWorkspaceRoot(input.cwd);
-      return yield* Effect.gen(function* () {
+      const indexed = yield* Effect.gen(function* () {
         const searchIndex = yield* WorkspaceSearchIndex.WorkspaceSearchIndex;
         return yield* searchIndex.list();
       }).pipe(
@@ -285,6 +329,24 @@ export const make = Effect.gen(function* () {
           ),
         ),
       );
+
+      // The path index excludes gitignored paths. Merge them back in, flagged
+      // so the file tree can render them dimmed. No repo means no ignored
+      // paths, so an empty merge leaves the indexed shape untouched.
+      const ignored = yield* listGitIgnoredEntries(normalizedCwd);
+      if (ignored.length === 0) {
+        return indexed;
+      }
+      const merged = new Map(indexed.entries.map((entry) => [entry.path, entry]));
+      for (const entry of ignored) {
+        merged.set(entry.path, entry);
+      }
+      return {
+        entries: WorkspaceSearchIndex.withDirectoryAncestors([...merged.values()]).toSorted(
+          (left, right) => left.path.localeCompare(right.path),
+        ),
+        truncated: false,
+      };
     },
   );
 
@@ -293,4 +355,5 @@ export const make = Effect.gen(function* () {
 
 export const layer = Layer.effect(WorkspaceEntries, make).pipe(
   Layer.provide(WorkspaceSearchIndex.WorkspaceSearchIndexMap.layer),
+  Layer.provide(VcsProcess.layer),
 );

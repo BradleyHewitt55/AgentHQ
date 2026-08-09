@@ -27,6 +27,7 @@ interface ChatHeaderProps {
   activeThreadTitle: string;
   activeProjectName: string | undefined;
   activeProjectCwd: string | null;
+  activeProjectFaviconPath: string | null;
   openInCwd: string | null;
   activeProjectScripts: ReadonlyArray<ProjectScript> | undefined;
   preferredScriptId: string | null;
@@ -44,6 +45,16 @@ interface ChatHeaderProps {
   onDeleteProjectScript: (scriptId: string) => Promise<ProjectScriptActionResult>;
   /** Project tasks quick action, rendered by the owner so this stays presentational. */
   tasksSlot?: ReactNode;
+}
+
+export function resolveRenameCommit(input: {
+  readonly title: string;
+  readonly originalTitle: string;
+}): { action: "commit"; title: string } | { action: "reject-empty" } | { action: "noop" } {
+  const trimmed = input.title.trim();
+  if (trimmed.length === 0) return { action: "reject-empty" };
+  if (trimmed === input.originalTitle) return { action: "noop" };
+  return { action: "commit", title: trimmed };
 }
 
 export function shouldShowOpenInPicker(input: {
@@ -65,6 +76,7 @@ export const ChatHeader = memo(function ChatHeader({
   activeThreadTitle,
   activeProjectName,
   activeProjectCwd,
+  activeProjectFaviconPath,
   openInCwd,
   activeProjectScripts,
   preferredScriptId,
@@ -111,6 +123,7 @@ export const ChatHeader = memo(function ChatHeader({
                 <ProjectFavicon
                   environmentId={activeThreadEnvironmentId}
                   cwd={activeProjectCwd ?? ""}
+                  faviconPath={activeProjectFaviconPath}
                   className="size-3.5"
                 />
                 <span className="max-w-40 truncate text-sm font-medium">{activeProjectName}</span>

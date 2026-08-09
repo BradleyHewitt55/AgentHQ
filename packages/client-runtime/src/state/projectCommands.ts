@@ -1,6 +1,7 @@
 import { type EnvironmentId, type ProjectReadFileResult, WS_METHODS } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
-import { Atom } from "effect/unstable/reactivity";
+import * as Effect from "effect/Effect";
+import { Atom, AtomRegistry } from "effect/unstable/reactivity";
 
 import {
   createAtomCommandScheduler,
@@ -54,18 +55,36 @@ export function createProjectEnvironmentAtoms<R, E>(
     key: ({ environmentId, input }: { environmentId: string; input: { projectId: string } }) =>
       JSON.stringify([environmentId, input.projectId]),
   };
+  const fileMutationConcurrency = {
+    mode: "serial" as const,
+    key: ({ environmentId, input }: { environmentId: string; input: { cwd: string } }) =>
+      JSON.stringify([environmentId, input.cwd]),
+  };
+  const listEntries = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:projects:list-entries",
+    tag: WS_METHODS.projectsListEntries,
+    staleTimeMs: 30_000,
+    idleTtlMs: 5 * 60_000,
+  });
+  const refreshListEntriesAfterMutation = <R>(
+    target: {
+      readonly environmentId: EnvironmentId;
+      readonly input: { readonly cwd: string };
+    },
+    registry: AtomRegistry.AtomRegistry,
+  ): Effect.Effect<void, never, R> =>
+    Effect.sync(() => {
+      registry.refresh(
+        listEntries({ environmentId: target.environmentId, input: { cwd: target.input.cwd } }),
+      );
+    });
   return {
     searchEntries: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:projects:search-entries",
       tag: WS_METHODS.projectsSearchEntries,
       staleTimeMs: 15_000,
     }),
-    listEntries: createEnvironmentRpcQueryAtomFamily(runtime, {
-      label: "environment-data:projects:list-entries",
-      tag: WS_METHODS.projectsListEntries,
-      staleTimeMs: 30_000,
-      idleTtlMs: 5 * 60_000,
-    }),
+    listEntries,
     readFile: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:projects:read-file",
       tag: WS_METHODS.projectsReadFile,
@@ -101,6 +120,30 @@ export function createProjectEnvironmentAtoms<R, E>(
         key: ({ environmentId, input }) =>
           JSON.stringify([environmentId, input.cwd, input.relativePath]),
       },
+      onSuccess: refreshListEntriesAfterMutation,
+    }),
+    // Entry mutations refresh the entries query so trees and pickers reflect
+    // the new layout without a manual refresh.
+    mkdir: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:projects:mkdir",
+      tag: WS_METHODS.projectsMkdir,
+      scheduler: fileScheduler,
+      concurrency: fileMutationConcurrency,
+      onSuccess: refreshListEntriesAfterMutation,
+    }),
+    moveEntry: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:projects:move-entry",
+      tag: WS_METHODS.projectsMove,
+      scheduler: fileScheduler,
+      concurrency: fileMutationConcurrency,
+      onSuccess: refreshListEntriesAfterMutation,
+    }),
+    deleteEntry: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:projects:delete-entry",
+      tag: WS_METHODS.projectsDelete,
+      scheduler: fileScheduler,
+      concurrency: fileMutationConcurrency,
+      onSuccess: refreshListEntriesAfterMutation,
     }),
   };
 }

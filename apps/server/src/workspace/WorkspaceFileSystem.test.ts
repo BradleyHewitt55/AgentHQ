@@ -21,6 +21,7 @@ const TestLayer = Layer.empty.pipe(
   Layer.provideMerge(ProjectLayer),
   Layer.provideMerge(WorkspaceEntries.layer.pipe(Layer.provide(WorkspacePaths.layer))),
   Layer.provideMerge(WorkspacePaths.layer),
+  Layer.provideMerge(VcsProcess.layer),
   Layer.provideMerge(VcsDriverRegistry.layer.pipe(Layer.provide(VcsProcess.layer))),
   Layer.provide(
     ServerConfig.ServerConfig.layerTest(process.cwd(), {
@@ -262,6 +263,261 @@ it.layer(TestLayer, { excludeTestServices: true })("WorkspaceFileSystemLive", (i
           .stat(escapedPath)
           .pipe(Effect.orElseSucceed(() => null));
         expect(escapedStat).toBeNull();
+      }),
+    );
+  });
+
+  describe("makeDirectory", () => {
+    it.effect("creates nested directories relative to the workspace root", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const cwd = yield* makeTempDir;
+
+        const result = yield* workspaceFileSystem.makeDirectory({
+          cwd,
+          relativePath: "src/components/ui",
+        });
+
+        expect(result).toEqual({ relativePath: "src/components/ui" });
+        const stat = yield* fileSystem.stat(path.join(cwd, "src/components/ui")).pipe(Effect.orDie);
+        expect(stat.type).toBe("Directory");
+      }),
+    );
+
+    it.effect("rejects paths outside the workspace root", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
+        const cwd = yield* makeTempDir;
+
+        const error = yield* workspaceFileSystem
+          .makeDirectory({ cwd, relativePath: "../escape-dir" })
+          .pipe(Effect.flip);
+
+        expect(error.message).toContain(
+          "Workspace file path must be relative to the project root: ../escape-dir",
+        );
+      }),
+    );
+
+    it.effect("rejects directories whose existing ancestor resolves outside the root", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const cwd = yield* makeTempDir;
+        const outsideDir = yield* makeTempDir;
+        yield* fileSystem.symlink(outsideDir, path.join(cwd, "linked"));
+
+        const error = yield* workspaceFileSystem
+          .makeDirectory({ cwd, relativePath: "linked/escape-dir" })
+          .pipe(Effect.flip);
+
+        expect(error).toBeInstanceOf(WorkspaceFileSystem.WorkspaceFilePathEscapeError);
+      }),
+    );
+  });
+
+  describe("moveEntry", () => {
+    it.effect("renames a file within the workspace root", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const cwd = yield* makeTempDir;
+        yield* writeTextFile(cwd, "old-name.md", "# Rename me\n");
+
+        const result = yield* workspaceFileSystem.moveEntry({
+          cwd,
+          fromPath: "old-name.md",
+          toPath: "new-name.md",
+        });
+
+        expect(result).toEqual({ fromPath: "old-name.md", toPath: "new-name.md" });
+        const moved = yield* fileSystem
+          .readFileString(path.join(cwd, "new-name.md"))
+          .pipe(Effect.orDie);
+        expect(moved).toBe("# Rename me\n");
+        const oldStat = yield* fileSystem
+          .stat(path.join(cwd, "old-name.md"))
+          .pipe(Effect.orElseSucceed(() => null));
+        expect(oldStat).toBeNull();
+      }),
+    );
+
+    it.effect("moves an entry into a folder", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const cwd = yield* makeTempDir;
+        yield* writeTextFile(cwd, "notes.md", "# Notes\n");
+        yield* writeTextFile(cwd, "archive/keep.txt", "keep\n");
+
+        yield* workspaceFileSystem.moveEntry({
+          cwd,
+          fromPath: "notes.md",
+          toPath: "archive/notes.md",
+        });
+
+        const moved = yield* fileSystem
+          .readFileString(path.join(cwd, "archive/notes.md"))
+          .pipe(Effect.orDie);
+        expect(moved).toBe("# Notes\n");
+      }),
+    );
+
+    it.effect("rejects missing sources", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
+        const path = yield* Path.Path;
+        const cwd = yield* makeTempDir;
+        const resolvedPath = path.join(cwd, "missing.txt");
+
+        const error = yield* workspaceFileSystem
+          .moveEntry({ cwd, fromPath: "missing.txt", toPath: "elsewhere.txt" })
+          .pipe(Effect.flip);
+
+        expect(error).toBeInstanceOf(WorkspaceFileSystem.WorkspaceSourcePathNotFoundError);
+        expect(error).toMatchObject({
+          workspaceRoot: cwd,
+          relativePath: "missing.txt",
+          resolvedPath,
+        });
+      }),
+    );
+
+    it.effect("rejects targets that already exist", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
+        const cwd = yield* makeTempDir;
+        yield* writeTextFile(cwd, "a.txt", "# A\n");
+        yield* writeTextFile(cwd, "b.txt", "# B\n");
+
+        const error = yield* workspaceFileSystem
+          .moveEntry({ cwd, fromPath: "a.txt", toPath: "b.txt" })
+          .pipe(Effect.flip);
+
+        expect(error).toBeInstanceOf(WorkspaceFileSystem.WorkspaceMoveTargetConflictError);
+        expect(error).toMatchObject({
+          workspaceRoot: cwd,
+          relativePath: "a.txt",
+          targetPath: "b.txt",
+        });
+      }),
+    );
+
+    it.effect("rejects moving a directory into its own subtree", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
+        const cwd = yield* makeTempDir;
+        yield* writeTextFile(cwd, "src/index.ts", "export {};\n");
+        yield* writeTextFile(cwd, "src/nested/deep.ts", "export {};\n");
+
+        const error = yield* workspaceFileSystem
+          .moveEntry({ cwd, fromPath: "src", toPath: "src/nested/deep" })
+          .pipe(Effect.flip);
+
+        expect(error).toBeInstanceOf(WorkspaceFileSystem.WorkspaceMoveTargetConflictError);
+      }),
+    );
+
+    it.effect("rejects sources outside the workspace root", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
+        const cwd = yield* makeTempDir;
+
+        const error = yield* workspaceFileSystem
+          .moveEntry({ cwd, fromPath: "../elsewhere.txt", toPath: "here.txt" })
+          .pipe(Effect.flip);
+
+        expect(error.message).toContain(
+          "Workspace file path must be relative to the project root: ../elsewhere.txt",
+        );
+      }),
+    );
+  });
+
+  describe("deleteEntry", () => {
+    it.effect("deletes a file", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const cwd = yield* makeTempDir;
+        yield* writeTextFile(cwd, "trash.md", "# Bye\n");
+
+        const result = yield* workspaceFileSystem.deleteEntry({
+          cwd,
+          relativePath: "trash.md",
+        });
+
+        expect(result).toEqual({ relativePath: "trash.md" });
+        const stat = yield* fileSystem
+          .stat(path.join(cwd, "trash.md"))
+          .pipe(Effect.orElseSucceed(() => null));
+        expect(stat).toBeNull();
+      }),
+    );
+
+    it.effect("deletes a folder and everything inside it recursively", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const cwd = yield* makeTempDir;
+        yield* writeTextFile(cwd, "old/src/a.ts", "export {};\n");
+        yield* writeTextFile(cwd, "old/src/lib/b.ts", "export {};\n");
+
+        yield* workspaceFileSystem.deleteEntry({ cwd, relativePath: "old" });
+
+        const stat = yield* fileSystem
+          .stat(path.join(cwd, "old"))
+          .pipe(Effect.orElseSucceed(() => null));
+        expect(stat).toBeNull();
+      }),
+    );
+
+    it.effect("rejects missing sources", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
+        const path = yield* Path.Path;
+        const cwd = yield* makeTempDir;
+        const resolvedPath = path.join(cwd, "missing.txt");
+
+        const error = yield* workspaceFileSystem
+          .deleteEntry({ cwd, relativePath: "missing.txt" })
+          .pipe(Effect.flip);
+
+        expect(error).toBeInstanceOf(WorkspaceFileSystem.WorkspaceSourcePathNotFoundError);
+        expect(error).toMatchObject({
+          workspaceRoot: cwd,
+          relativePath: "missing.txt",
+          resolvedPath,
+        });
+      }),
+    );
+
+    it.effect("rejects deleting through a symlink that points outside the root", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const cwd = yield* makeTempDir;
+        const outsideDir = yield* makeTempDir;
+        yield* writeTextFile(outsideDir, "secret.ts", "export {};\n");
+        yield* fileSystem.symlink(outsideDir, path.join(cwd, "linked"));
+
+        const error = yield* workspaceFileSystem
+          .deleteEntry({ cwd, relativePath: "linked/secret.ts" })
+          .pipe(Effect.flip);
+
+        expect(error).toBeInstanceOf(WorkspaceFileSystem.WorkspaceFilePathEscapeError);
+        const outsideSecret = yield* fileSystem
+          .stat(path.join(outsideDir, "secret.ts"))
+          .pipe(Effect.orElseSucceed(() => null));
+        expect(outsideSecret).not.toBeNull();
       }),
     );
   });

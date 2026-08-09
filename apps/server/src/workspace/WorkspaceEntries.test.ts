@@ -121,6 +121,55 @@ it.layer(TestLayer, { excludeTestServices: true })("WorkspaceEntries", (it) => {
         expect(result.truncated).toBe(false);
       }),
     );
+
+    it.effect("merges gitignored paths back into the listing, flagged as ignored", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTempDir({ prefix: "t3code-workspace-list-gitignore-", git: true });
+        yield* writeTextFile(cwd, ".gitignore", "build/\n*.log\n");
+        yield* writeTextFile(cwd, "src/keep.ts", "export {};");
+        yield* writeTextFile(cwd, "build/output.js", "x");
+        yield* writeTextFile(cwd, "src/debug.log", "noise");
+
+        const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
+        const result = yield* workspaceEntries.list({ cwd });
+        const entryByPath = new Map(result.entries.map((entry) => [entry.path, entry]));
+
+        expect(entryByPath.get("build")).toEqual({
+          path: "build",
+          kind: "directory",
+          ignored: true,
+        });
+        expect(entryByPath.get("build/output.js")).toBeUndefined();
+        expect(entryByPath.get("src/debug.log")).toEqual({
+          path: "src/debug.log",
+          kind: "file",
+          ignored: true,
+        });
+        expect(entryByPath.get("src/keep.ts")).toEqual({ path: "src/keep.ts", kind: "file" });
+        expect(entryByPath.get("src")).toEqual({ path: "src", kind: "directory" });
+        expect(entryByPath.get(".gitignore")).toEqual({ path: ".gitignore", kind: "file" });
+      }),
+    );
+
+    it.effect("lists ignored files inside tracked directories", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTempDir({ prefix: "t3code-workspace-list-tracked-ignore-" });
+        yield* writeTextFile(cwd, ".gitignore", "ignored.txt\n");
+        yield* writeTextFile(cwd, "src/keep.ts", "export {};");
+        yield* writeTextFile(cwd, "src/ignored.txt", "noise");
+        yield* git(cwd, ["init"]);
+
+        const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
+        const result = yield* workspaceEntries.list({ cwd });
+
+        expect(result.entries).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ path: "src/ignored.txt", ignored: true }),
+            expect.objectContaining({ path: "src/keep.ts" }),
+          ]),
+        );
+      }),
+    );
   });
 
   describe("search", () => {
