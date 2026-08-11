@@ -1,4 +1,4 @@
-﻿import {
+import {
   type EnvironmentId,
   type EditorId,
   type ProjectScript,

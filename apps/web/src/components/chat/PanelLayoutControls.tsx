@@ -1,4 +1,4 @@
-﻿import { Maximize2Icon, Minimize2Icon, PanelBottomIcon, PanelRightIcon } from "lucide-react";
+import { Maximize2Icon, Minimize2Icon, PanelBottomIcon, PanelRightIcon } from "lucide-react";
 import { memo } from "react";
 
 import { Toggle } from "../ui/toggle";
@@ -91,7 +91,7 @@ export const PanelLayoutControls = memo(function PanelLayoutControls({
           {rightPanelAvailable
             ? `Toggle right panel${rightPanelShortcutLabel ? ` (${rightPanelShortcutLabel})` : ""}${
                 liveAgentCount > 0
-                  ? ` ┬À ${liveAgentCount} ${liveAgentCount === 1 ? "agent" : "agents"} working`
+                  ? ` · ${liveAgentCount} ${liveAgentCount === 1 ? "agent" : "agents"} working`
                   : ""
               }`
             : "Right panel is unavailable"}
