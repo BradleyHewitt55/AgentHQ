@@ -12,6 +12,7 @@ import type * as ChildProcessSpawner from "effect/unstable/process/ChildProcessS
 
 import { makeAntigravityAdapter } from "../Layers/AntigravityAdapter.ts";
 import { ANTIGRAVITY_MODEL_NAMES } from "../Layers/antigravityLaunch.ts";
+import { ServerConfig } from "../../config.ts";
 import {
   defaultProviderContinuationIdentity,
   type ProviderDriver,
@@ -31,7 +32,8 @@ const MAINTENANCE_CAPABILITIES = makeManualOnlyProviderMaintenanceCapabilities({
 export type AntigravityDriverEnv =
   | ChildProcessSpawner.ChildProcessSpawner
   | FileSystem.FileSystem
-  | Path.Path;
+  | Path.Path
+  | ServerConfig;
 
 export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityDriverEnv> = {
   driverKind: DRIVER_KIND,

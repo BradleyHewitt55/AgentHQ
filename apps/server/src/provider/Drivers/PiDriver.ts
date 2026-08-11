@@ -7,7 +7,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import { joinPath } from "../Layers/adapterShared.ts";
-import { makePiAdapter } from "../Layers/PiAdapter.ts";
+import { makePiAdapter, type PiAdapterEnv } from "../Layers/PiAdapter.ts";
 import { loadPiSdk } from "../Layers/piSdk.ts";
 import {
   defaultProviderContinuationIdentity,
@@ -30,7 +30,9 @@ interface PiAvailableModel {
 }
 const decodeSettings = Schema.decodeSync(PiSettings);
 
-export const PiDriver: ProviderDriver<PiSettings> = {
+export type PiDriverEnv = PiAdapterEnv;
+
+export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
   driverKind: DRIVER_KIND,
   metadata: { displayName: "Pi", supportsMultipleInstances: true },
   configSchema: PiSettings,

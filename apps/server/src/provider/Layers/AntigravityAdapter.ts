@@ -19,6 +19,8 @@ import { ChildProcess } from "effect/unstable/process";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 import type { ChildProcessHandle } from "effect/unstable/process/ChildProcessSpawner";
 
+import { ServerConfig } from "../../config.ts";
+import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import {
   ProviderAdapterSessionNotFoundError,
   ProviderAdapterValidationError,
@@ -50,6 +52,7 @@ type AntigravityContext = {
   activeHandle: ChildProcessHandle | undefined;
   turns: Array<{ id: TurnId; items: unknown[] }>;
   conversation: Array<{ turnId: TurnId; user: string; assistant: string }>;
+  pendingFollowUps: Array<{ turnId: TurnId; prompt: string; model: string }>;
   interrupted: boolean;
   stopped: boolean;
 };
@@ -65,13 +68,38 @@ export const makeAntigravityAdapter = (
 ): Effect.Effect<
   ProviderAdapterShape<ProviderAdapterError>,
   never,
-  ChildProcessSpawner.ChildProcessSpawner
+  ChildProcessSpawner.ChildProcessSpawner | ServerConfig
 > =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
     const sessions = new Map<ThreadId, AntigravityContext>();
     const binaryPath = settings.binaryPath.trim() || "agy";
+
+    /**
+     * The print-mode prompt is argv text only, so images travel as markdown
+     * references the CLI resolves before handing the prompt to the model. The
+     * path is the attachment store's absolute path with forward slashes; the
+     * CLI process reads it itself, outside the agent sandbox.
+     */
+    const buildImageRefs = (input: ProviderSendTurnInput) =>
+      Effect.gen(function* () {
+        const { attachmentsDir } = yield* ServerConfig;
+        const refs: string[] = [];
+        for (const attachment of input.attachments ?? []) {
+          const attachmentPath = resolveAttachmentPath({ attachmentsDir, attachment });
+          if (!attachmentPath)
+            return yield* new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "sendTurn",
+              issue: `Invalid attachment id '${attachment.id}'.`,
+            });
+          const name = attachment.name.replace(/[[\]()]/g, "");
+          const pathUrl = attachmentPath.replace(/\\/g, "/");
+          refs.push(`![${name}](${pathUrl})`);
+        }
+        return refs;
+      });
 
     const emit = (context: AntigravityContext, draft: ProviderRuntimeEventDraft) => {
       // Offering to an unbounded queue always completes synchronously, so this
@@ -128,6 +156,7 @@ export const makeAntigravityAdapter = (
         activeHandle: undefined,
         turns: [],
         conversation: [],
+        pendingFollowUps: [],
         interrupted: false,
         stopped: false,
       };
@@ -145,7 +174,7 @@ export const makeAntigravityAdapter = (
       turnId: TurnId,
       userPrompt: string,
       args: ReadonlyArray<string>,
-    ) =>
+    ): Effect.Effect<void, never, never> =>
       Effect.gen(function* () {
         const environment = options.environment;
         const spawnCommand = yield* resolveSpawnCommand(
@@ -272,10 +301,11 @@ export const makeAntigravityAdapter = (
               ? { state: "failed", errorMessage }
               : { state: "completed" },
         });
+        yield* startNextQueuedTurn(context).pipe(Effect.orElseSucceed(() => undefined));
       }).pipe(
         Effect.scoped,
         Effect.catch((cause: unknown) =>
-          Effect.sync(() => {
+          Effect.gen(function* () {
             context.activeHandle = undefined;
             context.activeTurnId = undefined;
             emit(context, {
@@ -288,9 +318,59 @@ export const makeAntigravityAdapter = (
               turnId,
               payload: { state: "failed", errorMessage: message(cause) },
             });
+            yield* startNextQueuedTurn(context).pipe(Effect.orElseSucceed(() => undefined));
           }),
         ),
       );
+
+    const startNextQueuedTurn = (context: AntigravityContext): Effect.Effect<void, never, never> =>
+      Effect.gen(function* () {
+        if (
+          context.stopped ||
+          context.activeTurnId !== undefined ||
+          context.pendingFollowUps.length === 0
+        )
+          return;
+        const item = context.pendingFollowUps.shift();
+        if (item === undefined) return;
+        const cliPrompt = buildAntigravityPrompt(context.conversation, item.prompt);
+        const args = buildAntigravityArgs({
+          runtimeMode: context.providerSession.runtimeMode,
+          model: item.model,
+          prompt: cliPrompt,
+        });
+        if (!isAntigravityCommandWithinBudget(binaryPath, args)) {
+          const errorMessage =
+            "The Antigravity command exceeds the safe Windows command-line budget.";
+          emit(context, {
+            type: "runtime.error",
+            turnId: item.turnId,
+            payload: { message: errorMessage, class: "provider_error" },
+          });
+          emit(context, {
+            type: "turn.completed",
+            turnId: item.turnId,
+            payload: { state: "failed", errorMessage },
+          });
+          return;
+        }
+        context.activeTurnId = item.turnId;
+        context.interrupted = false;
+        context.turns.push({ id: item.turnId, items: [] });
+        context.providerSession = {
+          ...context.providerSession,
+          status: "running",
+          model: item.model,
+          activeTurnId: item.turnId,
+          updatedAt: now(),
+        };
+        emit(context, {
+          type: "turn.started",
+          turnId: item.turnId,
+          payload: { model: item.model },
+        });
+        yield* Effect.forkDetach(runTurn(context, item.turnId, item.prompt, args));
+      });
 
     const sendTurn: ProviderAdapterShape<ProviderAdapterError>["sendTurn"] = Effect.fn(
       "AntigravityAdapter.sendTurn",
@@ -302,30 +382,15 @@ export const makeAntigravityAdapter = (
           operation: "sendTurn",
           issue: "Antigravity session is stopped.",
         });
-      if (context.activeTurnId !== undefined)
-        return yield* new ProviderAdapterValidationError({
-          provider: PROVIDER,
-          operation: "sendTurn",
-          issue: "An Antigravity turn is already running for this session.",
-        });
-      if (input.attachments?.length)
-        return yield* new ProviderAdapterValidationError({
-          provider: PROVIDER,
-          operation: "sendTurn",
-          issue: "Antigravity CLI print mode cannot receive attachments.",
-        });
-      const prompt = input.input?.trim();
+      const imageRefs = input.attachments?.length ? yield* buildImageRefs(input) : [];
+      const prompt = [input.input?.trim(), ...imageRefs].filter(Boolean).join("\n\n");
       if (!prompt)
         return yield* new ProviderAdapterValidationError({
           provider: PROVIDER,
           operation: "sendTurn",
           issue: "A prompt is required.",
         });
-      const cliPrompt = buildAntigravityPrompt(context.conversation, prompt);
-      if (
-        prompt.length > ANTIGRAVITY_MAX_PROMPT_CHARS ||
-        cliPrompt.length > ANTIGRAVITY_MAX_PROMPT_CHARS
-      )
+      if (prompt.length > ANTIGRAVITY_MAX_PROMPT_CHARS)
         return yield* new ProviderAdapterValidationError({
           provider: PROVIDER,
           operation: "sendTurn",
@@ -333,6 +398,21 @@ export const makeAntigravityAdapter = (
         });
       const model =
         input.modelSelection?.model ?? context.providerSession.model ?? DEFAULT_ANTIGRAVITY_MODEL;
+      if (context.activeTurnId !== undefined) {
+        // The CLI is one-shot print mode and cannot steer into a live process,
+        // so a follow-up is queued and run as a new turn once the active turn
+        // completes, mirroring the Codex adapter's queued follow-up.
+        const queuedTurnId = TurnId.make(NodeCrypto.randomUUID());
+        context.pendingFollowUps.push({ turnId: queuedTurnId, prompt, model });
+        return { threadId: input.threadId, turnId: queuedTurnId };
+      }
+      const cliPrompt = buildAntigravityPrompt(context.conversation, prompt);
+      if (cliPrompt.length > ANTIGRAVITY_MAX_PROMPT_CHARS)
+        return yield* new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "sendTurn",
+          issue: `Antigravity CLI prompts are limited to ${ANTIGRAVITY_MAX_PROMPT_CHARS.toString()} characters.`,
+        });
       const args = buildAntigravityArgs({
         runtimeMode: context.providerSession.runtimeMode,
         model,

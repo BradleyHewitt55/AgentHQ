@@ -1,6 +1,10 @@
 // @effect-diagnostics globalDate:off runEffectInsideEffect:off
 import * as NodeCrypto from "node:crypto";
-import type { AgentSession, AgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import type {
+  AgentSession,
+  AgentSessionEvent,
+  PromptOptions,
+} from "@earendil-works/pi-coding-agent";
 import {
   ProviderDriverKind,
   type ProviderInstanceId,
@@ -13,9 +17,12 @@ import {
   type PiSettings,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 
+import { ServerConfig } from "../../config.ts";
+import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import {
   ProviderAdapterRequestError,
   ProviderAdapterSessionClosedError,
@@ -75,14 +82,56 @@ export interface PiAdapterOptions {
   readonly environment?: NodeJS.ProcessEnv;
 }
 
+export type PiAdapterEnv = FileSystem.FileSystem | ServerConfig;
+
+/** Structure the Pi SDK requires for image input (`ImageContent`). */
+interface PiImageContent {
+  readonly type: "image";
+  readonly data: string;
+  readonly mimeType: string;
+}
+
 export const makePiAdapter = (
   settings: PiSettings,
   options: PiAdapterOptions,
-): Effect.Effect<ProviderAdapterShape<ProviderAdapterError>, never> =>
+): Effect.Effect<ProviderAdapterShape<ProviderAdapterError>, never, PiAdapterEnv> =>
   Effect.gen(function* () {
     const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
     const sessions = new Map<ThreadId, PiContext>();
     const agentDir = settings.agentDir.trim() || undefined;
+
+    const buildImages = (input: ProviderSendTurnInput) =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const { attachmentsDir } = yield* ServerConfig;
+        const images: PiImageContent[] = [];
+        for (const attachment of input.attachments ?? []) {
+          const attachmentPath = resolveAttachmentPath({ attachmentsDir, attachment });
+          if (!attachmentPath)
+            return yield* new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "sendTurn",
+              issue: `Invalid attachment id '${attachment.id}'.`,
+            });
+          const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
+            Effect.mapError(
+              (cause) =>
+                new ProviderAdapterRequestError({
+                  provider: PROVIDER,
+                  method: "sendTurn",
+                  detail: `Failed to read attachment '${attachment.id}': ${message(cause)}.`,
+                  cause,
+                }),
+            ),
+          );
+          images.push({
+            type: "image",
+            data: Buffer.from(bytes).toString("base64"),
+            mimeType: attachment.mimeType,
+          });
+        }
+        return images;
+      });
 
     const emit = (context: PiContext, draft: ProviderRuntimeEventDraft) => {
       // Offering to an unbounded queue always completes synchronously, so this
@@ -414,45 +463,41 @@ export const makePiAdapter = (
             }),
         });
       }
-      const turnId = TurnId.make(NodeCrypto.randomUUID());
-      context.activeTurnId = turnId;
-      context.turns.push({ id: turnId, items: [] });
-      context.providerSession = {
-        ...context.providerSession,
-        status: "running",
-        activeTurnId: turnId,
-        updatedAt: now(),
-      };
-      emit(context, {
-        type: "turn.started",
-        turnId,
-        payload: {
-          model: context.agent.model
-            ? `${context.agent.model.provider}/${context.agent.model.id}`
-            : undefined,
-        },
-        raw: { source: "pi.sdk.event", method: "prompt", payload: {} },
-      });
-      const attachments = input.attachments ?? [];
-      if (attachments.length > 0)
-        // Only the filename reaches the model — say so rather than letting the
-        // turn read as if the image had been delivered.
+      const activeTurnId = context.activeTurnId;
+      const streaming = activeTurnId !== undefined;
+      const turnId = activeTurnId ?? TurnId.make(NodeCrypto.randomUUID());
+      if (!streaming) {
+        context.activeTurnId = turnId;
+        context.turns.push({ id: turnId, items: [] });
+        context.providerSession = {
+          ...context.providerSession,
+          status: "running",
+          activeTurnId: turnId,
+          updatedAt: now(),
+        };
         emit(context, {
-          type: "runtime.warning",
+          type: "turn.started",
           turnId,
           payload: {
-            message: "Pi received attachment names only; image data was not sent.",
-            detail: attachments.map((attachment) => attachment.name),
+            model: context.agent.model
+              ? `${context.agent.model.provider}/${context.agent.model.id}`
+              : undefined,
           },
-          raw: { source: "pi.sdk.event", method: "prompt.attachments", payload: {} },
+          raw: { source: "pi.sdk.event", method: "prompt", payload: {} },
         });
-      const attachmentLines = attachments.map(
-        (attachment) => `[Attached image: ${attachment.name}]`,
-      );
-      const prompt = [input.input?.trim(), ...attachmentLines].filter(Boolean).join("\n\n");
+      }
+      const images = yield* buildImages(input);
+      const prompt = input.input?.trim();
+      // The Pi SDK throws when `prompt` is called mid-stream. A follow-up
+      // message is steered into the live agent loop instead and the work
+      // continues as the same turn, mirroring the Claude adapter's steer.
+      const promptOptions: PromptOptions = {
+        ...(images.length > 0 ? { images } : {}),
+        ...(streaming ? { streamingBehavior: "steer" as const } : {}),
+      };
       yield* Effect.forkDetach(
         Effect.tryPromise({
-          try: () => context.agent.prompt(prompt),
+          try: () => context.agent.prompt(prompt, promptOptions),
           catch: (cause) =>
             new ProviderAdapterRequestError({
               provider: PROVIDER,

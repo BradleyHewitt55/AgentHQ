@@ -3,13 +3,18 @@ import type {
   ContextMenuOpenContext as TreeContextMenuOpenContext,
   FileTreeDropResult,
 } from "@pierre/trees";
-import type { EnvironmentId, ProjectEntry } from "@t3tools/contracts";
+import type { EnvironmentId, ProjectEntry, ScopedThreadRef } from "@t3tools/contracts";
 import { FileTree, useFileTree, useFileTreeSearch } from "@pierre/trees/react";
 import { serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
+import {
+  isAtomCommandInterrupted,
+  squashAtomCommandFailure,
+} from "@t3tools/client-runtime/state/runtime";
 import * as Cause from "effect/Cause";
 import { FilePlus2, FolderPlus, RotateCw } from "lucide-react";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 
+import { isBrowserPreviewFile, openFileInPreview } from "~/browser/openFileInPreview";
 import { Button } from "~/components/ui/button";
 import {
   AlertDialog,
@@ -33,7 +38,7 @@ import {
 import { Input } from "~/components/ui/input";
 import { InputGroup, InputGroupInput } from "~/components/ui/input-group";
 import { Label } from "~/components/ui/label";
-import { toastManager } from "~/components/ui/toast";
+import { stackedThreadToast, toastManager } from "~/components/ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { useComposerHandleContext } from "~/composerHandleContext";
 import { writeTextToClipboard } from "~/hooks/useCopyToClipboard";
@@ -41,8 +46,14 @@ import { useTheme } from "~/hooks/useTheme";
 import { cn } from "~/lib/utils";
 import { readLocalApi } from "~/localApi";
 import { T3_PIERRE_ICONS } from "~/pierre-icons";
+import { isPreviewSupportedInRuntime } from "~/previewStateStore";
+import { assetEnvironment } from "~/state/assets";
+import { useEnvironmentHttpBaseUrl } from "~/state/environments";
+import { previewEnvironment } from "~/state/preview";
 import { projectEnvironment } from "~/state/projects";
 import { useAtomCommand } from "~/state/use-atom-command";
+import { useAtomQueryRunner } from "~/state/use-atom-query-runner";
+import { resolvePathLinkTarget } from "~/terminal-links";
 
 import { createFileTreeDragMentionController } from "./fileTreeDragMention";
 import { useProjectEntriesQuery } from "./projectFilesQueryState";
@@ -51,6 +62,7 @@ interface FileBrowserPanelProps {
   environmentId: EnvironmentId;
   cwd: string;
   projectName: string;
+  threadRef: ScopedThreadRef;
   /** File currently open in the preview pane; revealed and selected in the tree. */
   selectedPath: string | null;
   /** Bumped when the same path should be revealed again (e.g. re-opened from search). */
@@ -288,6 +300,7 @@ export default function FileBrowserPanel({
   environmentId,
   cwd,
   projectName,
+  threadRef,
   selectedPath,
   selectedPathRevealId,
   onOpenFile,
@@ -326,6 +339,13 @@ export default function FileBrowserPanel({
   const mkdir = useAtomCommand(projectEnvironment.mkdir);
   const moveEntry = useAtomCommand(projectEnvironment.moveEntry);
   const deleteEntry = useAtomCommand(projectEnvironment.deleteEntry);
+  const environmentHttpBaseUrl = useEnvironmentHttpBaseUrl(environmentId);
+  const createAssetUrl = useAtomQueryRunner(assetEnvironment.createUrl, {
+    reportFailure: false,
+  });
+  const openPreview = useAtomCommand(previewEnvironment.open, {
+    reportFailure: false,
+  });
 
   const [renameTarget, setRenameTarget] = useState<RenameTarget | null>(null);
   // Inline "new file"/"new folder" drafts render as a temporary row in the
@@ -466,6 +486,33 @@ export default function FileBrowserPanel({
     [cwd, deleteEntry, environmentId, onCloseFile],
   );
 
+  const handleOpenInBrowser = useCallback(
+    (relativePath: string) => {
+      if (!environmentHttpBaseUrl) return;
+      void (async () => {
+        const result = await openFileInPreview({
+          threadRef,
+          filePath: resolvePathLinkTarget(relativePath, cwd),
+          httpBaseUrl: environmentHttpBaseUrl,
+          createAssetUrl,
+          openPreview,
+        });
+        if (result._tag === "Success" || isAtomCommandInterrupted(result)) {
+          return;
+        }
+        const error = squashAtomCommandFailure(result);
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Unable to open file in browser",
+            description: error instanceof Error ? error.message : "An error occurred.",
+          }),
+        );
+      })();
+    },
+    [createAssetUrl, cwd, environmentHttpBaseUrl, openPreview, threadRef],
+  );
+
   const showEntryContextMenu = async (
     item: TreeContextMenuItem,
     context: TreeContextMenuOpenContext,
@@ -491,6 +538,9 @@ export default function FileBrowserPanel({
     items.push({ id: "add-to-chat", label: "Add to chat" });
     if (item.kind === "file") {
       items.push({ id: "open", label: "Open" });
+      if (isPreviewSupportedInRuntime() && isBrowserPreviewFile(relativePath)) {
+        items.push({ id: "open-in-browser", label: "Open in browser" });
+      }
     }
     items.push({ id: "rename", label: "Rename" }, { id: "delete", label: "Delete" });
     try {
@@ -534,6 +584,9 @@ export default function FileBrowserPanel({
         }
         case "open":
           onOpenFile(relativePath);
+          return;
+        case "open-in-browser":
+          handleOpenInBrowser(relativePath);
           return;
         case "rename":
           setRenameTarget({ path: relativePath, kind: item.kind });

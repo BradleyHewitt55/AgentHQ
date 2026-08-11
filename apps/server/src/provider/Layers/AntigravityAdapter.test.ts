@@ -1,4 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
 import {
   ProviderInstanceId,
   ThreadId,
@@ -8,6 +10,7 @@ import {
 } from "@t3tools/contracts";
 import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { SpawnExecutableResolution } from "@t3tools/shared/shell";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -15,6 +18,7 @@ import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 
+import { ServerConfig } from "../../config.ts";
 import { makeAntigravityAdapter } from "./AntigravityAdapter.ts";
 
 const SETTINGS = {
@@ -84,6 +88,10 @@ const drainTurn = <A, E, R>(stream: Stream.Stream<ProviderRuntimeEvent, E, R>) =
     Effect.map((events) => Array.from(events)),
   );
 
+const serverConfigLayer = ServerConfig.layerTest(process.cwd(), {
+  prefix: "t3-antigravity-adapter-test-",
+}).pipe(Layer.provideMerge(NodeServices.layer));
+
 const runTurnScenario = (input: {
   readonly process: FakeProcess;
   readonly runtimeMode?: RuntimeMode;
@@ -104,7 +112,7 @@ const runTurnScenario = (input: {
     if (input.process.gate) yield* Deferred.succeed(input.process.gate, undefined);
     const events = yield* drainTurn(adapter.streamEvents);
     return { adapter, recorder, events };
-  }).pipe(Effect.provideService(HostProcessPlatform, "linux"));
+  }).pipe(Effect.provideService(HostProcessPlatform, "linux"), Effect.provide(serverConfigLayer));
 
 const turnCompleted = (events: ReadonlyArray<ProviderRuntimeEvent>) =>
   events.find((event) => event.type === "turn.completed");
@@ -161,10 +169,11 @@ describe("AntigravityAdapter argv", () => {
         PATHEXT: ".EXE;.CMD",
       }),
       Effect.provideService(SpawnExecutableResolution, () => "C:\\fake\\agy.cmd"),
+      Effect.provide(serverConfigLayer),
     ),
   );
 
-  it.effect("rejects a concurrent turn for the same session", () =>
+  it.effect("queues a follow-up turn while one is running and runs it after", () =>
     Effect.gen(function* () {
       const gate = yield* Deferred.make<void>();
       const recorder = makeRecordingSpawner({ stdout: "one", gate });
@@ -176,14 +185,96 @@ describe("AntigravityAdapter argv", () => {
         runtimeMode: "full-access",
         cwd: "/workspace",
       });
-      yield* adapter.sendTurn({ threadId: THREAD_ID, input: "first" });
+      const first = yield* adapter.sendTurn({ threadId: THREAD_ID, input: "first" });
+      const second = yield* adapter.sendTurn({ threadId: THREAD_ID, input: "second" });
+      expect(second.turnId).not.toBe(first.turnId);
+      yield* Deferred.succeed(gate, undefined);
+      let completedTurns = 0;
+      const events = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => {
+          if (event.type === "turn.completed") completedTurns += 1;
+          return completedTurns >= 2;
+        }),
+        Stream.runCollect,
+        Effect.timeout(5_000),
+        Effect.map((collected) => Array.from(collected)),
+      );
+      const started = events.filter((event) => event.type === "turn.started");
+      const completed = events.filter((event) => event.type === "turn.completed");
+      expect(started).toHaveLength(2);
+      expect(completed).toHaveLength(2);
+      expect(new Set(started.map((event) => event.turnId)).size).toBe(2);
+      expect(new Set(completed.map((event) => event.turnId)).size).toBe(2);
+      const firstCompletedIndex = events.findIndex(
+        (event) => event.type === "turn.completed" && event.turnId === first.turnId,
+      );
+      const secondStartedIndex = events.findIndex(
+        (event) => event.type === "turn.started" && event.turnId === second.turnId,
+      );
+      expect(firstCompletedIndex).toBeGreaterThan(-1);
+      expect(secondStartedIndex).toBeGreaterThan(-1);
+      expect(firstCompletedIndex).toBeLessThan(secondStartedIndex);
+      expect(recorder.commands).toHaveLength(2);
+      const secondPrintArg = recorder.commands[1]?.args.find((arg) => arg.startsWith("--print="));
+      expect(secondPrintArg).toContain("second");
+    }).pipe(Effect.provideService(HostProcessPlatform, "linux"), Effect.provide(serverConfigLayer)),
+  );
+
+  it.effect("delivers image attachments as markdown references in the print prompt", () =>
+    Effect.gen(function* () {
+      const { attachmentsDir } = yield* ServerConfig;
+      const attachmentId = "screenshot-12345678-1234-1234-1234-123456789abc";
+      const attachmentPath = NodePath.join(attachmentsDir, `${attachmentId}.png`);
+      yield* Effect.tryPromise(() =>
+        NodeFSP.mkdir(NodePath.dirname(attachmentPath), { recursive: true }),
+      );
+      yield* Effect.tryPromise(() => NodeFSP.writeFile(attachmentPath, Uint8Array.from([1, 2, 3])));
+      const recorder = makeRecordingSpawner({ stdout: "ok" });
+      const adapter = yield* makeAntigravityAdapter(SETTINGS, { instanceId: INSTANCE_ID }).pipe(
+        Effect.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, recorder.spawner)),
+      );
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        runtimeMode: "full-access",
+        cwd: "/workspace",
+      });
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "What color?",
+        attachments: [
+          { id: attachmentId, name: "screenshot.png", mimeType: "image/png", type: "image" },
+        ],
+      });
+      yield* drainTurn(adapter.streamEvents);
+      const printArg = recorder.commands[0]?.args.find((arg) => arg.startsWith("--print="));
+      expect(printArg).toContain("What color?");
+      expect(printArg).toContain(
+        `![screenshot.png](${NodePath.resolve(attachmentPath).replace(/\\/g, "/")})`,
+      );
+    }).pipe(Effect.provideService(HostProcessPlatform, "linux"), Effect.provide(serverConfigLayer)),
+  );
+
+  it.effect("rejects an invalid image attachment id", () =>
+    Effect.gen(function* () {
+      const recorder = makeRecordingSpawner({ stdout: "ok" });
+      const adapter = yield* makeAntigravityAdapter(SETTINGS, { instanceId: INSTANCE_ID }).pipe(
+        Effect.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, recorder.spawner)),
+      );
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        runtimeMode: "full-access",
+        cwd: "/workspace",
+      });
       const error = yield* adapter
-        .sendTurn({ threadId: THREAD_ID, input: "second" })
+        .sendTurn({
+          threadId: THREAD_ID,
+          input: "What color?",
+          attachments: [{ id: "../evil", name: "x.png", mimeType: "image/png", type: "image" }],
+        })
         .pipe(Effect.flip);
       expect(error._tag).toBe("ProviderAdapterValidationError");
-      yield* Deferred.succeed(gate, undefined);
-      yield* drainTurn(adapter.streamEvents);
-    }).pipe(Effect.provideService(HostProcessPlatform, "linux")),
+      expect(recorder.commands).toHaveLength(0);
+    }).pipe(Effect.provideService(HostProcessPlatform, "linux"), Effect.provide(serverConfigLayer)),
   );
 });
 
