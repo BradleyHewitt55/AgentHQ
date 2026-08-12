@@ -212,6 +212,7 @@ export const ProjectFileFailure = Schema.Literals([
   "workspace_path_outside_root",
   "resolved_path_outside_root",
   "path_not_file",
+  "path_not_directory",
   "binary_file",
   "source_not_found",
   "target_already_exists",
@@ -229,6 +230,7 @@ export const ProjectFileOperation = Schema.Literals([
   "make-directory",
   "write-file",
   "rename",
+  "copy",
   "remove",
 ]);
 export type ProjectFileOperation = typeof ProjectFileOperation.Type;
@@ -387,6 +389,60 @@ export class ProjectMoveError extends Schema.TaggedErrorClass<ProjectMoveError>(
       message:
         decodedProjectErrorMessage(props) ??
         `Failed to move workspace entry '${props.fromPath}' to '${props.toPath}' in '${props.cwd}'.`,
+    } as any);
+  }
+}
+
+/** App-local file browser paste operation: copies preserve source hierarchy; cuts move it. */
+export const ProjectPasteOperation = Schema.Literals(["copy", "cut"]);
+export type ProjectPasteOperation = typeof ProjectPasteOperation.Type;
+
+export const ProjectPasteInput = Schema.Struct({
+  cwd: TrimmedNonEmptyString,
+  sourcePaths: Schema.Array(
+    TrimmedNonEmptyString.check(Schema.isMaxLength(PROJECT_WRITE_FILE_PATH_MAX_LENGTH)),
+  ).check(Schema.isMinLength(1), Schema.isMaxLength(100)),
+  // Omitting the directory means the project root.
+  targetDirectory: Schema.optional(
+    TrimmedNonEmptyString.check(Schema.isMaxLength(PROJECT_WRITE_FILE_PATH_MAX_LENGTH)),
+  ),
+  operation: ProjectPasteOperation,
+});
+export type ProjectPasteInput = typeof ProjectPasteInput.Type;
+
+export const ProjectPasteResult = Schema.Struct({
+  copiedPaths: Schema.Array(TrimmedNonEmptyString),
+});
+export type ProjectPasteResult = typeof ProjectPasteResult.Type;
+
+export class ProjectPasteError extends Schema.TaggedErrorClass<ProjectPasteError>()(
+  "ProjectPasteError",
+  {
+    cwd: Schema.optional(TrimmedNonEmptyString),
+    sourcePaths: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
+    targetDirectory: Schema.optional(TrimmedNonEmptyString),
+    operation: Schema.optional(ProjectPasteOperation),
+    failure: Schema.optional(ProjectFileFailure),
+    resolvedPath: Schema.optional(TrimmedNonEmptyString),
+    resolvedWorkspaceRoot: Schema.optional(TrimmedNonEmptyString),
+    operationPath: Schema.optional(TrimmedNonEmptyString),
+    message: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  // @effect-diagnostics-next-line overriddenSchemaConstructor:off
+  constructor(
+    props: Omit<ProjectFileFailureContext, "relativePath" | "operation"> & {
+      readonly sourcePaths: readonly string[];
+      readonly targetDirectory?: string;
+      readonly operation: ProjectPasteOperation;
+    },
+  ) {
+    super({
+      ...props,
+      message:
+        decodedProjectErrorMessage(props) ??
+        `Failed to ${props.operation} workspace entries into '${props.targetDirectory ?? "."}' in '${props.cwd}'.`,
     } as any);
   }
 }

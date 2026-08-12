@@ -124,6 +124,10 @@ function createProviderServiceHarness(
           continuationKey: `${providerName}:instance:${instanceId}`,
         },
       }),
+    getSubscriptionUsage: Effect.succeed({
+      readAt: now,
+      providers: [],
+    }),
     rollbackConversation,
     get streamEvents() {
       return Stream.fromPubSub(runtimeEventPubSub);

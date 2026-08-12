@@ -53,6 +53,7 @@ const GROK_BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
   },
 ];
 
+// Grok's ACP startup reports session model state, not a command catalog.
 export function buildInitialGrokProviderSnapshot(
   grokSettings: GrokSettings,
 ): Effect.Effect<ServerProviderDraft> {

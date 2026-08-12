@@ -23,6 +23,8 @@ import {
   type ProviderDriverKind,
   type ProviderRuntimeEvent,
   type ProviderSession,
+  type ProviderSubscriptionUsage,
+  type SubscriptionUsageSummary,
 } from "@t3tools/contracts";
 import { causeErrorTag } from "@t3tools/shared/observability";
 import * as DateTime from "effect/DateTime";
@@ -36,6 +38,7 @@ import * as SchemaIssue from "effect/SchemaIssue";
 import * as Stream from "effect/Stream";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
+import * as SubscriptionUsage from "../../persistence/SubscriptionUsage.ts";
 import * as ServerConfig from "../../config.ts";
 import {
   increment,
@@ -48,6 +51,10 @@ import {
   withMetrics,
 } from "../../observability/Metrics.ts";
 import { type ProviderAdapterError, ProviderValidationError } from "../Errors.ts";
+import {
+  applySubscriptionRateLimitsUpdate,
+  unavailableSubscriptionUsage,
+} from "../SubscriptionRateLimits.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import * as ProviderAdapterRegistry from "../Services/ProviderAdapterRegistry.ts";
 import * as ProviderService from "../Services/ProviderService.ts";
@@ -215,7 +222,26 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
 
   const registry = yield* ProviderAdapterRegistry.ProviderAdapterRegistry;
   const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+  const subscriptionUsageRepository = yield* SubscriptionUsage.SubscriptionUsageRepository;
   const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
+  const initialSubscriptionUsage = {
+    codex: unavailableSubscriptionUsage("codex"),
+    claude: unavailableSubscriptionUsage("claude"),
+  };
+  const persistedSubscriptionUsage = yield* subscriptionUsageRepository.list().pipe(
+    Effect.catch((error) =>
+      Effect.logWarning("failed to hydrate provider subscription usage", {
+        errorTag: error._tag,
+      }).pipe(Effect.as([])),
+    ),
+  );
+  for (const snapshot of persistedSubscriptionUsage) {
+    initialSubscriptionUsage[snapshot.provider] = snapshot;
+  }
+  const subscriptionUsage =
+    yield* Ref.make<Readonly<Record<"codex" | "claude", ProviderSubscriptionUsage>>>(
+      initialSubscriptionUsage,
+    );
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
   const prepareMcpSession = (threadId: ThreadId, providerInstanceId: ProviderInstanceId) =>
     McpSessionRegistry.issueActiveMcpCredential({ threadId, providerInstanceId }).pipe(
@@ -232,6 +258,30 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
 
   const publishRuntimeEvent = (event: ProviderRuntimeEvent): Effect.Effect<void> =>
     Effect.succeed(event).pipe(
+      Effect.tap((canonicalEvent) =>
+        canonicalEvent.type === "account.rate-limits.updated"
+          ? Effect.gen(function* () {
+              const current = yield* Ref.get(subscriptionUsage);
+              const snapshot = applySubscriptionRateLimitsUpdate(
+                current[canonicalEvent.payload.rateLimits.provider],
+                canonicalEvent.payload.rateLimits,
+                canonicalEvent.createdAt,
+              );
+              yield* subscriptionUsageRepository.upsert(snapshot).pipe(
+                Effect.catch((error) =>
+                  Effect.logWarning("failed to persist provider subscription usage", {
+                    errorTag: error._tag,
+                    provider: snapshot.provider,
+                  }),
+                ),
+              );
+              yield* Ref.set(subscriptionUsage, {
+                ...current,
+                [snapshot.provider]: snapshot,
+              });
+            })
+          : Effect.void,
+      ),
       Effect.tap((canonicalEvent) =>
         canonicalEventLogger
           ? canonicalEventLogger.write(canonicalEvent, canonicalEvent.threadId)
@@ -1135,6 +1185,14 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     listSessions,
     getCapabilities,
     getInstanceInfo,
+    getSubscriptionUsage: Effect.gen(function* () {
+      const providers = yield* Ref.get(subscriptionUsage);
+      const readAt = yield* nowIso;
+      return {
+        readAt,
+        providers: [providers.codex, providers.claude],
+      } satisfies SubscriptionUsageSummary;
+    }),
     rollbackConversation,
     // Each access creates a fresh PubSub subscription so that multiple
     // consumers (ProviderRuntimeIngestion, CheckpointReactor, etc.) each

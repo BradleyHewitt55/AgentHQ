@@ -21,6 +21,7 @@ import { SshPasswordPromptDialog } from "../components/desktop/SshPasswordPrompt
 import { ProviderUpdateLaunchNotification } from "../components/ProviderUpdateLaunchNotification";
 import { SlowRpcRequestToastCoordinator } from "../components/SlowRpcRequestToastCoordinator";
 import { ThemeEditorHost } from "../components/settings/ThemeEditorHost";
+import { SubscriptionUsagePills } from "../components/usage/SubscriptionUsage";
 import { Button } from "../components/ui/button";
 import {
   AnchoredToastProvider,
@@ -45,6 +46,7 @@ import { shellEnvironment } from "../state/shell";
 import { useAtomValue } from "@effect/atom-react";
 import { useAtomCommand } from "../state/use-atom-command";
 import { useEnvironments, usePrimaryEnvironment } from "../state/environments";
+import { useSubscriptionUsage } from "../state/subscriptionUsage";
 import {
   primaryServerConfigAtom,
   primaryServerConfigEventAtom,
@@ -141,6 +143,7 @@ function RootRouteView() {
         <HostedStaticEnvironmentBootstrap />
         {primaryEnvironmentAuthenticated ? <EventRouter /> : null}
         {primaryEnvironmentAuthenticated ? <ProviderUpdateLaunchNotification /> : null}
+        {primaryEnvironmentAuthenticated ? <SubscriptionUsagePillsHost /> : null}
         {appShell}
         {/* Above the router: a theme draft is judged by walking the app, so the
             editor has to survive navigation away from settings. */}
@@ -148,6 +151,10 @@ function RootRouteView() {
       </AnchoredToastProvider>
     </ToastProvider>
   );
+}
+
+function SubscriptionUsagePillsHost() {
+  return <SubscriptionUsagePills {...useSubscriptionUsage()} />;
 }
 
 function GlassAppearanceSync() {

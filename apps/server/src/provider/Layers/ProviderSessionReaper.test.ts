@@ -183,6 +183,10 @@ describe("ProviderSessionReaper", () => {
           },
         });
       },
+      getSubscriptionUsage: Effect.succeed({
+        readAt: "2026-01-01T00:00:00.000Z",
+        providers: [],
+      }),
       rollbackConversation: () => unsupported(),
       streamEvents: Stream.empty,
     };

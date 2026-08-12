@@ -1671,6 +1671,28 @@ describe("composerDraftStore runtime and interaction settings", () => {
     expect(draftFor(threadId, TEST_ENVIRONMENT_ID)?.interactionMode).toBe("plan");
   });
 
+  it("persists the prompt sending lock with the composer draft", () => {
+    const store = useComposerDraftStore.getState();
+    store.setSendLocked(threadRef, true);
+
+    const persistApi = useComposerDraftStore.persist as unknown as {
+      getOptions: () => {
+        partialize: (state: ReturnType<typeof useComposerDraftStore.getState>) => unknown;
+      };
+    };
+    const persisted = persistApi.getOptions().partialize(useComposerDraftStore.getState()) as {
+      draftsByThreadKey?: Record<string, { sendLocked?: boolean }>;
+    };
+
+    expect(draftFor(threadId, TEST_ENVIRONMENT_ID)?.sendLocked).toBe(true);
+    expect(
+      persisted.draftsByThreadKey?.[threadKeyFor(threadId, TEST_ENVIRONMENT_ID)]?.sendLocked,
+    ).toBe(true);
+
+    store.setSendLocked(threadRef, false);
+    expect(draftFor(threadId, TEST_ENVIRONMENT_ID)).toBeUndefined();
+  });
+
   it("removes empty settings-only drafts when overrides are cleared", () => {
     const store = useComposerDraftStore.getState();
 

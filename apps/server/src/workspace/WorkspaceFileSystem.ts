@@ -14,6 +14,8 @@ import type {
   ProjectDeleteResult,
   ProjectMkdirInput,
   ProjectMkdirResult,
+  ProjectPasteInput,
+  ProjectPasteResult,
   ProjectMoveInput,
   ProjectMoveResult,
   ProjectReadFileInput,
@@ -50,6 +52,7 @@ export class WorkspaceFileSystemOperationError extends Schema.TaggedErrorClass<W
       "make-directory",
       "write-file",
       "rename",
+      "copy",
       "remove",
     ]),
     cause: Schema.Defect(),
@@ -113,6 +116,33 @@ export class WorkspaceSourcePathNotFoundError extends Schema.TaggedErrorClass<Wo
   }
 }
 
+export class WorkspacePasteTargetNotDirectoryError extends Schema.TaggedErrorClass<WorkspacePasteTargetNotDirectoryError>()(
+  "WorkspacePasteTargetNotDirectoryError",
+  {
+    workspaceRoot: Schema.String,
+    relativePath: Schema.String,
+    resolvedPath: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `Workspace paste target '${this.relativePath}' in '${this.workspaceRoot}' is not a directory: ${this.resolvedPath}`;
+  }
+}
+
+export class WorkspacePasteTargetConflictError extends Schema.TaggedErrorClass<WorkspacePasteTargetConflictError>()(
+  "WorkspacePasteTargetConflictError",
+  {
+    workspaceRoot: Schema.String,
+    relativePath: Schema.String,
+    resolvedPath: Schema.String,
+    targetPath: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `Workspace paste target '${this.targetPath}' in '${this.workspaceRoot}' already exists; '${this.relativePath}' was not copied.`;
+  }
+}
+
 export class WorkspaceMoveTargetConflictError extends Schema.TaggedErrorClass<WorkspaceMoveTargetConflictError>()(
   "WorkspaceMoveTargetConflictError",
   {
@@ -133,6 +163,8 @@ export const WorkspaceFileSystemError = Schema.Union([
   WorkspacePathNotFileError,
   WorkspaceBinaryFileError,
   WorkspaceSourcePathNotFoundError,
+  WorkspacePasteTargetNotDirectoryError,
+  WorkspacePasteTargetConflictError,
   WorkspaceMoveTargetConflictError,
 ]);
 export type WorkspaceFileSystemError = typeof WorkspaceFileSystemError.Type;
@@ -177,6 +209,13 @@ export class WorkspaceFileSystem extends Context.Service<
       input: ProjectMoveInput,
     ) => Effect.Effect<
       ProjectMoveResult,
+      WorkspaceFileSystemError | WorkspacePaths.WorkspacePathOutsideRootError
+    >;
+    /** Copy or move multiple entries into an existing workspace directory without overwriting. */
+    readonly pasteEntries: (
+      input: ProjectPasteInput,
+    ) => Effect.Effect<
+      ProjectPasteResult,
       WorkspaceFileSystemError | WorkspacePaths.WorkspacePathOutsideRootError
     >;
     /** Recursively delete a file or directory relative to the workspace root. */
@@ -501,6 +540,110 @@ export const make = Effect.gen(function* () {
     return { fromPath: source.relativePath, toPath: target.relativePath };
   });
 
+  const pasteEntries: WorkspaceFileSystem["Service"]["pasteEntries"] = Effect.fn(
+    "WorkspaceFileSystem.pasteEntries",
+  )(function* (input) {
+    const target =
+      input.targetDirectory === undefined
+        ? { absolutePath: input.cwd, relativePath: "" }
+        : yield* workspacePaths.resolveRelativePathWithinRoot({
+            workspaceRoot: input.cwd,
+            relativePath: input.targetDirectory,
+          });
+    const targetStat = yield* Effect.tryPromise({
+      try: () => NodeFSP.stat(target.absolutePath),
+      catch: () =>
+        new WorkspaceSourcePathNotFoundError({
+          workspaceRoot: input.cwd,
+          relativePath: input.targetDirectory ?? ".",
+          resolvedPath: target.absolutePath,
+        }),
+    });
+    if (!targetStat.isDirectory()) {
+      return yield* new WorkspacePasteTargetNotDirectoryError({
+        workspaceRoot: input.cwd,
+        relativePath: input.targetDirectory ?? ".",
+        resolvedPath: target.absolutePath,
+      });
+    }
+    yield* resolveRealWithinRoot({
+      workspaceRoot: input.cwd,
+      relativePath: input.targetDirectory ?? ".",
+      absolutePath: target.absolutePath,
+    });
+
+    const sources = yield* Effect.forEach(input.sourcePaths, (relativePath) =>
+      Effect.gen(function* () {
+        const source = yield* workspacePaths.resolveRelativePathWithinRoot({
+          workspaceRoot: input.cwd,
+          relativePath,
+        });
+        const stat = yield* Effect.tryPromise({
+          try: () => NodeFSP.stat(source.absolutePath),
+          catch: () =>
+            new WorkspaceSourcePathNotFoundError({
+              workspaceRoot: input.cwd,
+              relativePath,
+              resolvedPath: source.absolutePath,
+            }),
+        });
+        yield* resolveRealWithinRoot({
+          workspaceRoot: input.cwd,
+          relativePath,
+          absolutePath: source.absolutePath,
+        });
+        const destinationPath = path.join(target.absolutePath, path.basename(source.absolutePath));
+        const destinationRelativePath = target.relativePath
+          ? `${target.relativePath}/${path.basename(source.relativePath)}`
+          : path.basename(source.relativePath);
+        return { source, stat, destinationPath, destinationRelativePath };
+      }),
+    );
+
+    const plannedDestinations = new Set<string>();
+    for (const entry of sources) {
+      if (
+        plannedDestinations.has(entry.destinationRelativePath) ||
+        (entry.stat.isDirectory() &&
+          (target.relativePath === entry.source.relativePath ||
+            target.relativePath.startsWith(`${entry.source.relativePath}/`))) ||
+        (yield* existsOnPath(entry.destinationPath))
+      ) {
+        return yield* new WorkspacePasteTargetConflictError({
+          workspaceRoot: input.cwd,
+          relativePath: entry.source.relativePath,
+          resolvedPath: entry.source.absolutePath,
+          targetPath: entry.destinationRelativePath,
+        });
+      }
+      plannedDestinations.add(entry.destinationRelativePath);
+    }
+
+    for (const entry of sources) {
+      yield* Effect.tryPromise({
+        try: () =>
+          input.operation === "cut"
+            ? NodeFSP.rename(entry.source.absolutePath, entry.destinationPath)
+            : NodeFSP.cp(entry.source.absolutePath, entry.destinationPath, {
+                recursive: entry.stat.isDirectory(),
+                force: false,
+                errorOnExist: true,
+              }),
+        catch: (cause) =>
+          new WorkspaceFileSystemOperationError({
+            workspaceRoot: input.cwd,
+            relativePath: entry.source.relativePath,
+            resolvedPath: entry.source.absolutePath,
+            operationPath: entry.destinationPath,
+            operation: input.operation === "cut" ? "rename" : "copy",
+            cause,
+          }),
+      });
+    }
+    yield* workspaceEntries.refresh(input.cwd);
+    return { copiedPaths: sources.map((entry) => entry.destinationRelativePath) };
+  });
+
   const deleteEntry: WorkspaceFileSystem["Service"]["deleteEntry"] = Effect.fn(
     "WorkspaceFileSystem.deleteEntry",
   )(function* (input) {
@@ -546,7 +689,14 @@ export const make = Effect.gen(function* () {
     return { relativePath: target.relativePath };
   });
 
-  return WorkspaceFileSystem.of({ deleteEntry, readFile, writeFile, makeDirectory, moveEntry });
+  return WorkspaceFileSystem.of({
+    deleteEntry,
+    pasteEntries,
+    readFile,
+    writeFile,
+    makeDirectory,
+    moveEntry,
+  });
 });
 
 export const layer = Layer.effect(WorkspaceFileSystem, make);

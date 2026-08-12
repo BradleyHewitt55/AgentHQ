@@ -76,7 +76,7 @@ const refreshedSnapshot: ServerProvider = {
   auth: { status: "authenticated" },
   checkedAt: "2026-04-10T00:00:01.000Z",
   models: [],
-  slashCommands: [],
+  slashCommands: [{ name: "review", description: "Review the current change." }],
   skills: [],
 };
 

@@ -1,10 +1,10 @@
-import type { UsageProviderKind } from "@t3tools/contracts";
 import { CheckIcon, RefreshCwIcon, XIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { isElectron } from "../../env";
 import { cn } from "../../lib/utils";
 import { useUsage, type EnvironmentUsageStatus } from "../../state/usage";
+import { useSubscriptionUsage } from "../../state/subscriptionUsage";
 import {
   enumerateDays,
   formatCount,
@@ -19,7 +19,10 @@ import { SidebarInset } from "../ui/sidebar";
 import { WorkspaceBreadcrumb, WorkspaceBreadcrumbItem } from "../WorkspaceBreadcrumb";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "../../workspaceTitlebar";
 import { UsageChartLegend, UsageProviderChart, type UsageChartMetric } from "./UsageProviderChart";
-import { PROVIDER_COLOR, PROVIDER_LABEL, PROVIDER_MARK, PROVIDER_ORDER } from "./usageProviders";
+import { PROVIDER_COLOR, PROVIDER_LABEL, PROVIDER_ORDER } from "./usageProviders";
+import { SubscriptionUsageSection } from "./SubscriptionUsage";
+import { ProviderMark } from "./ProviderMark";
+import { ChatTokenUsageSection } from "./ChatTokenUsage";
 
 const WINDOW_OPTIONS = [
   { days: 7, label: "7 days" },
@@ -36,6 +39,7 @@ export function UsagePage() {
   // shift the range and refetch every environment.
   const window = useMemo(() => makeWindow(windowDays), [windowDays]);
   const { merged, environments, isPending, isPartial, refresh } = useUsage(window);
+  const subscriptionUsage = useSubscriptionUsage();
 
   // Hold the content until every environment is terminal. Rendering merged
   // totals while devices are still answering makes every number on the page
@@ -137,6 +141,15 @@ export function UsagePage() {
                   environments={environments}
                   duplicateSources={merged.duplicateSources}
                   staleEnvironments={merged.staleEnvironments}
+                />
+
+                <SubscriptionUsageSection {...subscriptionUsage} />
+
+                <ChatTokenUsageSection
+                  merged={merged}
+                  environments={environments}
+                  sinceDay={window.sinceDay}
+                  untilDay={window.untilDay}
                 />
 
                 {/* Cost first: the financial answer, then the provider split. */}
@@ -374,18 +387,6 @@ export function UsagePage() {
       </div>
     </SidebarInset>
   );
-}
-
-/** Brand mark for the harness a row belongs to. */
-function ProviderMark({
-  provider,
-  className,
-}: {
-  readonly provider: UsageProviderKind;
-  readonly className: string;
-}) {
-  const Mark = PROVIDER_MARK[provider];
-  return <Mark className={cn("shrink-0", className)} aria-hidden />;
 }
 
 function Metric({

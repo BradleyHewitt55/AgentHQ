@@ -339,6 +339,10 @@ describe("ProviderCommandReactor", () => {
           },
         });
       },
+      getSubscriptionUsage: Effect.succeed({
+        readAt: "2026-01-01T00:00:00.000Z",
+        providers: [],
+      }),
       rollbackConversation: () => unsupported(),
       get streamEvents() {
         return Stream.fromPubSub(runtimeEventPubSub);

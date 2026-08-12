@@ -96,6 +96,76 @@ describe("foldSubagentActivities", () => {
     expect(agent.completedAt).not.toBeNull();
   });
 
+  it("keeps active file telemetry separate from confirmed changes", () => {
+    const rows = [
+      activity("task.started", { taskId: "files-1", title: "Implement files" }),
+      activity("tool.started", {
+        itemId: "tool-1",
+        itemType: "file_change",
+        agentId: "files-1",
+        data: { toolName: "edit", input: { path: "apps/web/src/AgentsPanel.tsx" } },
+      }),
+    ];
+    const [active] = fold(rows);
+    rows.push(
+      activity("tool.completed", {
+        itemId: "tool-1",
+        itemType: "file_change",
+        status: "completed",
+        agentId: "files-1",
+        data: { toolName: "edit", input: { path: "apps/web/src/AgentsPanel.tsx" } },
+      }),
+    );
+    const [settled] = fold(rows);
+
+    expect(active?.activeFiles).toEqual(["apps/web/src/AgentsPanel.tsx"]);
+    expect(active?.changedFiles).toEqual([]);
+    expect(settled?.activeFiles).toEqual([]);
+    expect(settled?.changedFiles).toEqual(["apps/web/src/AgentsPanel.tsx"]);
+  });
+
+  it("does not infer a file from unrelated or failed tool telemetry", () => {
+    const [agent] = fold([
+      activity("task.started", { taskId: "files-2", title: "Investigate" }),
+      activity("tool.started", {
+        itemId: "tool-command",
+        itemType: "command_execution",
+        agentId: "files-2",
+        data: { toolName: "bash", input: { command: "cat secrets.txt" } },
+      }),
+      activity("tool.completed", {
+        itemId: "tool-failed-write",
+        itemType: "file_change",
+        status: "failed",
+        agentId: "files-2",
+        data: { toolName: "write", input: { path: "src/not-written.ts" } },
+      }),
+    ]);
+
+    expect(agent?.activeFiles).toEqual([]);
+    expect(agent?.changedFiles).toEqual([]);
+  });
+
+  it("uses provider file snapshots without retaining stale active paths", () => {
+    const [agent] = fold([
+      activity("task.started", {
+        taskId: "pi-files",
+        taskType: "subagent",
+        activeFiles: ["src/in-progress.ts"],
+      }),
+      activity("task.completed", {
+        taskId: "pi-files",
+        taskType: "subagent",
+        status: "completed",
+        activeFiles: [],
+        changedFiles: ["src/finished.ts"],
+      }),
+    ]);
+
+    expect(agent?.activeFiles).toEqual([]);
+    expect(agent?.changedFiles).toEqual(["src/finished.ts"]);
+  });
+
   it("progress can create an agent when its start row aged out of retention", () => {
     const agents = fold([
       activity("task.progress", {
@@ -388,6 +458,33 @@ describe("deriveAgentPanelModel", () => {
     expect(model.idleCount + model.runningCount + model.waitingCount + model.settledCount).toBe(
       roster.length,
     );
+  });
+
+  it("keeps a completed child visible while a sibling remains active", () => {
+    const agents = fold([
+      activity("task.started", { taskId: "pi-done", title: "Review", taskType: "subagent" }),
+      activity("task.started", { taskId: "pi-running", title: "Search", taskType: "subagent" }),
+      activity("task.completed", {
+        taskId: "pi-done",
+        status: "completed",
+        summary: "Review found no issues.",
+        taskType: "subagent",
+      }),
+      activity("task.progress", {
+        taskId: "pi-running",
+        status: "running",
+        taskType: "subagent",
+      }),
+    ]);
+    const model = deriveAgentPanelModel({ agents });
+
+    expect(model.directAgents.map((agent) => [agent.id, agent.status, agent.result])).toEqual([
+      ["pi-done", "completed", "Review found no issues."],
+      ["pi-running", "running", null],
+    ]);
+    expect(model.settledCount).toBe(1);
+    expect(model.runningCount).toBe(1);
+    expect(model.liveCount).toBe(1);
   });
 
   it("keeps direct spawns in first-seen order as their activity changes", () => {

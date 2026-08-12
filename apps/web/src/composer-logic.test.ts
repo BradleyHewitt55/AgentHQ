@@ -5,6 +5,7 @@ import {
   collapseExpandedComposerCursor,
   detectComposerTrigger,
   expandCollapsedComposerCursor,
+  extendComposerTriggerReplacementRange,
   isCollapsedCursorAdjacentToInlineToken,
   parseStandaloneComposerSlashCommand,
   replaceTextRange,
@@ -14,15 +15,43 @@ import { INLINE_TERMINAL_CONTEXT_PLACEHOLDER } from "./lib/terminalContext";
 
 describe("shouldSubmitComposerOnEnter", () => {
   it("submits plain Enter on desktop", () => {
-    expect(shouldSubmitComposerOnEnter({ isMobileViewport: false, shiftKey: false })).toBe(true);
+    expect(
+      shouldSubmitComposerOnEnter({
+        isMobileViewport: false,
+        isSendLocked: false,
+        shiftKey: false,
+      }),
+    ).toBe(true);
   });
 
   it("inserts a newline for plain Enter on mobile", () => {
-    expect(shouldSubmitComposerOnEnter({ isMobileViewport: true, shiftKey: false })).toBe(false);
+    expect(
+      shouldSubmitComposerOnEnter({
+        isMobileViewport: true,
+        isSendLocked: false,
+        shiftKey: false,
+      }),
+    ).toBe(false);
   });
 
   it("inserts a newline for Shift+Enter", () => {
-    expect(shouldSubmitComposerOnEnter({ isMobileViewport: false, shiftKey: true })).toBe(false);
+    expect(
+      shouldSubmitComposerOnEnter({
+        isMobileViewport: false,
+        isSendLocked: false,
+        shiftKey: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("inserts a newline for Enter while sending is locked", () => {
+    expect(
+      shouldSubmitComposerOnEnter({
+        isMobileViewport: false,
+        isSendLocked: true,
+        shiftKey: false,
+      }),
+    ).toBe(false);
   });
 });
 
@@ -356,6 +385,21 @@ describe("isCollapsedCursorAdjacentToInlineToken", () => {
 
     expect(isCollapsedCursorAdjacentToInlineToken(text, tokenEnd, "left")).toBe(true);
     expect(isCollapsedCursorAdjacentToInlineToken(text, tokenStart, "right")).toBe(true);
+  });
+});
+
+describe("provider slash command replacement", () => {
+  it("replaces only the active multiline trigger and leaves a cursor-ready argument space", () => {
+    const text = "Keep this line\n/rev existing argument\nKeep this too";
+    const rangeStart = "Keep this line\n".length;
+    const rangeEnd = rangeStart + "/rev".length;
+    const replacement = "/review ";
+    const replacementRangeEnd = extendComposerTriggerReplacementRange(text, rangeEnd, replacement);
+
+    expect(replaceTextRange(text, rangeStart, replacementRangeEnd, replacement)).toEqual({
+      text: "Keep this line\n/review existing argument\nKeep this too",
+      cursor: "Keep this line\n/review ".length,
+    });
   });
 });
 

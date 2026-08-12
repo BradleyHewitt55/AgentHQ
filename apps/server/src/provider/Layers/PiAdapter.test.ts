@@ -84,9 +84,20 @@ const serverConfigLayer = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-pi-adapter-test-",
 }).pipe(Layer.provideMerge(NodeServices.layer));
 
-const drainTurn = <A, E, R>(stream: Stream.Stream<A, E, R>) =>
+const drainTurn = <A extends { type: string }, E, R>(stream: Stream.Stream<A, E, R>) =>
   stream.pipe(
     Stream.takeUntil((event: { type: string }) => event.type === "turn.completed"),
+    Stream.runCollect,
+    Effect.timeout(5_000),
+    Effect.map((events) => Array.from(events)),
+  );
+
+const drainUntil = <A extends { type: string }, E, R>(
+  stream: Stream.Stream<A, E, R>,
+  predicate: (event: A) => boolean,
+) =>
+  stream.pipe(
+    Stream.takeUntil(predicate),
     Stream.runCollect,
     Effect.timeout(5_000),
     Effect.map((events) => Array.from(events)),
@@ -150,6 +161,211 @@ describe("PiAdapter turns", () => {
       expect(events.some((event) => event.type === "turn.started")).toBe(true);
       expect(events.some((event) => event.type === "turn.completed")).toBe(true);
       expect(result.turnId).toBeDefined();
+    }).pipe(Effect.provide(serverConfigLayer)),
+  );
+
+  it.effect("projects Pi subagents into the shared running and completed task lifecycle", () =>
+    Effect.gen(function* () {
+      const adapter = yield* makeTestFixture();
+      yield* adapter.sendTurn({ threadId: THREAD_ID, input: "delegate this" });
+      const session = lastSession();
+      yield* waitForPromptCalls(session, 1);
+      yield* Effect.sync(() =>
+        session!.emit({
+          type: "tool_execution_start",
+          toolCallId: "spawn-1",
+          toolName: "subagent_spawn",
+          args: { name: "Inspect runtime", harness: "pi" },
+        }),
+      );
+      yield* Effect.sync(() =>
+        session!.emit({
+          type: "tool_execution_end",
+          toolCallId: "spawn-1",
+          toolName: "subagent_spawn",
+          isError: false,
+          result: {
+            details: {
+              id: "sa-pi-1",
+              title: "Inspect runtime",
+              harness: "pi",
+              model: "anthropic/claude-sonnet",
+            },
+          },
+        }),
+      );
+      yield* Effect.sync(() =>
+        session!.emit({
+          type: "message_end",
+          message: {
+            role: "custom",
+            customType: "subagent-result",
+            content: "Runtime inspection finished.",
+            display: true,
+            details: {
+              id: "sa-pi-1",
+              title: "Inspect runtime",
+              status: "done",
+              activeFiles: ["src/stale.ts"],
+              changedFiles: ["src/runtime.ts"],
+            },
+            timestamp: Date.now(),
+          },
+        }),
+      );
+      yield* Effect.sync(() => session!.emit({ type: "agent_settled" }));
+
+      const events = yield* drainTurn(adapter.streamEvents);
+      const started = events.find((event) => event.type === "task.started");
+      const running = events.find(
+        (event) => event.type === "task.progress" && event.payload.taskId === "sa-pi-1",
+      );
+      const completed = events.find((event) => event.type === "task.completed");
+
+      expect(started).toMatchObject({
+        payload: {
+          taskId: "sa-pi-1",
+          taskType: "subagent",
+          title: "Inspect runtime",
+          role: "pi subagent",
+          model: "anthropic/claude-sonnet",
+        },
+      });
+      expect(running).toMatchObject({
+        payload: { status: "running", summary: "Running in background" },
+      });
+      expect(completed).toMatchObject({
+        payload: {
+          taskId: "sa-pi-1",
+          status: "completed",
+          summary: "Runtime inspection finished.",
+          activeFiles: [],
+          changedFiles: ["src/runtime.ts"],
+        },
+      });
+    }).pipe(Effect.provide(serverConfigLayer)),
+  );
+
+  it.effect("continues after one background Pi subagent settles while siblings run", () =>
+    Effect.gen(function* () {
+      const adapter = yield* makeTestFixture();
+      const initialTurn = yield* adapter.sendTurn({ threadId: THREAD_ID, input: "delegate" });
+      const session = lastSession();
+      yield* waitForPromptCalls(session, 1);
+
+      for (const details of [
+        { id: "sa-pi-done", title: "Review", harness: "pi" },
+        { id: "sa-pi-running", title: "Search", harness: "pi" },
+      ]) {
+        yield* Effect.sync(() =>
+          session!.emit({
+            type: "tool_execution_end",
+            toolCallId: `spawn-${details.id}`,
+            toolName: "subagent_spawn",
+            isError: false,
+            result: { details },
+          }),
+        );
+      }
+      // The foreground turn settles while the extension-owned children stay
+      // alive; its completion message restarts the parent agent.
+      yield* Effect.sync(() => session!.emit({ type: "agent_settled" }));
+      yield* Effect.sync(() => session!.emit({ type: "agent_start" }));
+      yield* Effect.sync(() =>
+        session!.emit({
+          type: "message_end",
+          message: {
+            role: "custom",
+            customType: "subagent-result",
+            content: "Review found no issues.",
+            display: true,
+            details: { id: "sa-pi-done", title: "Review", status: "done" },
+            timestamp: 0,
+          },
+        }),
+      );
+      yield* Effect.sync(() =>
+        session!.emit({
+          type: "message_update",
+          assistantMessageEvent: { type: "text_delta", delta: "Continuing with search." },
+        }),
+      );
+      yield* Effect.sync(() => session!.emit({ type: "agent_settled" }));
+
+      const events = yield* drainUntil(
+        adapter.streamEvents,
+        (event) => event.type === "turn.completed" && event.turnId !== initialTurn.turnId,
+      );
+      const resumedTurn = events.find(
+        (event) => event.type === "turn.started" && event.turnId !== initialTurn.turnId,
+      )?.turnId;
+
+      expect(resumedTurn).toBeDefined();
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: "task.completed",
+          turnId: resumedTurn,
+          payload: expect.objectContaining({
+            taskId: "sa-pi-done",
+            status: "completed",
+            summary: "Review found no issues.",
+          }),
+        }),
+      );
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: "task.progress",
+          payload: expect.objectContaining({ taskId: "sa-pi-running", status: "running" }),
+        }),
+      );
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: "content.delta",
+          turnId: resumedTurn,
+          payload: { streamKind: "assistant_text", delta: "Continuing with search." },
+        }),
+      );
+    }).pipe(Effect.provide(serverConfigLayer)),
+  );
+
+  it.effect("reconciles Pi subagent list snapshots into running and completed tasks", () =>
+    Effect.gen(function* () {
+      const adapter = yield* makeTestFixture();
+      yield* adapter.sendTurn({ threadId: THREAD_ID, input: "check agents" });
+      const session = lastSession();
+      yield* waitForPromptCalls(session, 1);
+      yield* Effect.sync(() =>
+        session!.emit({
+          type: "tool_execution_end",
+          toolCallId: "list-1",
+          toolName: "subagent_list",
+          isError: false,
+          result: {
+            details: {
+              subagents: [
+                { id: "sa-pi-running", title: "Search", harness: "pi", status: "running" },
+                { id: "sa-pi-done", title: "Review", harness: "pi", status: "done" },
+              ],
+            },
+          },
+        }),
+      );
+      yield* Effect.sync(() => session!.emit({ type: "agent_settled" }));
+
+      const events = yield* drainTurn(adapter.streamEvents);
+      expect(events.filter((event) => event.type === "task.started")).toHaveLength(2);
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: "task.progress",
+          payload: expect.objectContaining({ taskId: "sa-pi-running", status: "running" }),
+        }),
+      );
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: "task.completed",
+          payload: expect.objectContaining({ taskId: "sa-pi-done", status: "completed" }),
+        }),
+      );
     }).pipe(Effect.provide(serverConfigLayer)),
   );
 

@@ -103,6 +103,9 @@ import {
   ProjectMkdirError,
   ProjectMkdirInput,
   ProjectMkdirResult,
+  ProjectPasteError,
+  ProjectPasteInput,
+  ProjectPasteResult,
   ProjectMoveError,
   ProjectMoveInput,
   ProjectMoveResult,
@@ -195,7 +198,12 @@ import {
   ResourceTelemetryRetryResult,
   ResourceTelemetrySnapshot,
 } from "./resourceTelemetry.ts";
-import { UsageReadError, UsageSummary, UsageSummaryInput } from "./usage.ts";
+import {
+  SubscriptionUsageSummary,
+  UsageReadError,
+  UsageSummary,
+  UsageSummaryInput,
+} from "./usage.ts";
 import { ServerSettings, ServerSettingsError, ServerSettingsPatch } from "./settings.ts";
 import {
   SourceControlCloneRepositoryInput,
@@ -220,6 +228,7 @@ export const WS_METHODS = {
   projectsSearchEntries: "projects.searchEntries",
   projectsWriteFile: "projects.writeFile",
   projectsMkdir: "projects.mkdir",
+  projectsPaste: "projects.paste",
   projectsMove: "projects.move",
   projectsDelete: "projects.delete",
 
@@ -301,6 +310,7 @@ export const WS_METHODS = {
   serverReportHostPowerState: "server.reportHostPowerState",
   serverGetBackgroundPolicy: "server.getBackgroundPolicy",
   serverGetUsageSummary: "server.getUsageSummary",
+  serverGetSubscriptionUsage: "server.getSubscriptionUsage",
 
   // Cloud environment methods
   cloudGetRelayClientStatus: "cloud.getRelayClientStatus",
@@ -457,6 +467,12 @@ export const WsServerGetUsageSummaryRpc = Rpc.make(WS_METHODS.serverGetUsageSumm
   payload: UsageSummaryInput,
   success: UsageSummary,
   error: Schema.Union([EnvironmentAuthorizationError, UsageReadError]),
+});
+
+export const WsServerGetSubscriptionUsageRpc = Rpc.make(WS_METHODS.serverGetSubscriptionUsage, {
+  payload: Schema.Struct({}),
+  success: SubscriptionUsageSummary,
+  error: EnvironmentAuthorizationError,
 });
 
 export const WsServerSignalProcessRpc = Rpc.make(WS_METHODS.serverSignalProcess, {
@@ -652,6 +668,12 @@ export const WsProjectsMkdirRpc = Rpc.make(WS_METHODS.projectsMkdir, {
   payload: ProjectMkdirInput,
   success: ProjectMkdirResult,
   error: Schema.Union([ProjectMkdirError, EnvironmentAuthorizationError]),
+});
+
+export const WsProjectsPasteRpc = Rpc.make(WS_METHODS.projectsPaste, {
+  payload: ProjectPasteInput,
+  success: ProjectPasteResult,
+  error: Schema.Union([ProjectPasteError, EnvironmentAuthorizationError]),
 });
 
 export const WsProjectsMoveRpc = Rpc.make(WS_METHODS.projectsMove, {
@@ -1059,6 +1081,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetResourceTelemetryHistoryRpc,
   WsServerRetryResourceTelemetryRpc,
   WsServerGetUsageSummaryRpc,
+  WsServerGetSubscriptionUsageRpc,
   WsServerSignalProcessRpc,
   WsServerReportClientActivityRpc,
   WsServerReportHostPowerStateRpc,
@@ -1083,6 +1106,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsSourceControlPublishRepositoryRpc,
   WsProjectsListEntriesRpc,
   WsProjectsMkdirRpc,
+  WsProjectsPasteRpc,
   WsProjectsMoveRpc,
   WsProjectsDeleteRpc,
   WsProjectsReadFileRpc,

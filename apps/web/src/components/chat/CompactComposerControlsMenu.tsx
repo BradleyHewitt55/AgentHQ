@@ -4,6 +4,7 @@ import { EllipsisIcon } from "lucide-react";
 import { Button } from "../ui/button";
 import {
   Menu,
+  MenuItem,
   MenuPopup,
   MenuRadioGroup,
   MenuRadioItem,
@@ -15,8 +16,10 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
   interactionMode: ProviderInteractionMode;
   runtimeMode: RuntimeMode;
   showInteractionModeToggle: boolean;
+  sendLocked: boolean;
   traitsMenuContent?: ReactNode;
   onToggleInteractionMode: () => void;
+  onToggleSendLock: () => void;
   onRuntimeModeChange: (mode: RuntimeMode) => void;
 }) {
   return (
@@ -56,6 +59,10 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
             <MenuDivider />
           </>
         ) : null}
+        <MenuItem onClick={props.onToggleSendLock}>
+          {props.sendLocked ? "Unlock prompt sending" : "Lock prompt sending"}
+        </MenuItem>
+        <MenuDivider />
         <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Access</div>
         <MenuRadioGroup
           value={props.runtimeMode}

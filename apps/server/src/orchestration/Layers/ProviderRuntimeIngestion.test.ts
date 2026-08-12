@@ -123,6 +123,10 @@ function createProviderServiceHarness() {
         },
       });
     },
+    getSubscriptionUsage: Effect.succeed({
+      readAt: "2026-01-01T00:00:00.000Z",
+      providers: [],
+    }),
     rollbackConversation: () => unsupported(),
     get streamEvents() {
       return Stream.fromPubSub(runtimeEventPubSub);
@@ -1107,6 +1111,8 @@ describe("ProviderRuntimeIngestion", () => {
     expect(activity?.kind).toBe("tool.completed");
     expect(activity?.summary).toBe("Read file");
     expect(payload?.itemType).toBe("dynamic_tool_call");
+    expect(payload?.itemId).toBe("item-tool-completed");
+    expect(payload?.status).toBe("completed");
     expect(payload?.detail).toBeUndefined();
     expect(data?.toolCallId).toBe("tool-read-1");
     expect(data?.kind).toBe("read");

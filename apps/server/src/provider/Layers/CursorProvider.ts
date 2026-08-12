@@ -74,6 +74,8 @@ export const CURSOR_PARAMETERIZED_MODEL_PICKER_CAPABILITIES = {
   },
 } satisfies NonNullable<EffectAcpSchema.InitializeRequest["clientCapabilities"]>;
 
+// ACP initialization and Cursor's list_available_models extension expose
+// model capabilities only; neither reports prompt slash commands.
 export function buildInitialCursorProviderSnapshot(
   cursorSettings: CursorSettings,
 ): Effect.Effect<ServerProviderDraft> {

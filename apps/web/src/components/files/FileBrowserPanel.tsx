@@ -11,7 +11,7 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import * as Cause from "effect/Cause";
-import { FilePlus2, FolderPlus, RotateCw } from "lucide-react";
+import { ClipboardPaste, Copy, FilePlus2, FolderPlus, RotateCw, Scissors } from "lucide-react";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 
 import { isBrowserPreviewFile, openFileInPreview } from "~/browser/openFileInPreview";
@@ -55,6 +55,15 @@ import { useAtomCommand } from "~/state/use-atom-command";
 import { useAtomQueryRunner } from "~/state/use-atom-query-runner";
 import { resolvePathLinkTarget } from "~/terminal-links";
 
+import {
+  getClipboardSourcePaths,
+  getDeleteTargets,
+  getExpandedDirectoryPaths,
+  getPasteConflicts,
+  isUntouchedInlineCreateName,
+  type FileBrowserDeleteTarget,
+} from "./fileBrowserLogic";
+import { getFileBrowserClipboard, setFileBrowserClipboard } from "./fileBrowserClipboard";
 import { createFileTreeDragMentionController } from "./fileTreeDragMention";
 import { useProjectEntriesQuery } from "./projectFilesQueryState";
 
@@ -120,6 +129,70 @@ function RefreshFilesButton(props: { isPending: boolean; onRefresh: () => void }
       </TooltipTrigger>
       <TooltipPopup>{props.isPending ? "Refreshing…" : "Refresh files"}</TooltipPopup>
     </Tooltip>
+  );
+}
+
+function FileClipboardButtons(props: {
+  canCopy: boolean;
+  canPaste: boolean;
+  onCopy: () => void;
+  onCut: () => void;
+  onPaste: () => void;
+}) {
+  return (
+    <>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              aria-label="Copy selected files"
+              disabled={!props.canCopy}
+              onClick={props.onCopy}
+            />
+          }
+        >
+          <Copy />
+        </TooltipTrigger>
+        <TooltipPopup>Copy selected files</TooltipPopup>
+      </Tooltip>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              aria-label="Cut selected files"
+              disabled={!props.canCopy}
+              onClick={props.onCut}
+            />
+          }
+        >
+          <Scissors />
+        </TooltipTrigger>
+        <TooltipPopup>Cut selected files</TooltipPopup>
+      </Tooltip>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              aria-label="Paste files"
+              disabled={!props.canPaste}
+              onClick={props.onPaste}
+            />
+          }
+        >
+          <ClipboardPaste />
+        </TooltipTrigger>
+        <TooltipPopup>Paste into selected folder or project root</TooltipPopup>
+      </Tooltip>
+    </>
   );
 }
 
@@ -287,13 +360,17 @@ interface CreateTarget {
   kind: "file" | "folder";
   parentPath: string | null;
 }
+interface InlineCreateDraft extends CreateTarget {
+  placeholderPath: string;
+}
 interface RenameTarget {
   path: string;
   kind: "file" | "directory";
 }
-interface DeleteTarget {
-  path: string;
-  kind: "file" | "directory";
+type DeleteTarget = FileBrowserDeleteTarget;
+interface PasteConflict {
+  operation: "copy" | "cut";
+  paths: readonly string[];
 }
 
 export default function FileBrowserPanel({
@@ -339,6 +416,7 @@ export default function FileBrowserPanel({
   const mkdir = useAtomCommand(projectEnvironment.mkdir);
   const moveEntry = useAtomCommand(projectEnvironment.moveEntry);
   const deleteEntry = useAtomCommand(projectEnvironment.deleteEntry);
+  const pasteEntries = useAtomCommand(projectEnvironment.pasteEntries);
   const environmentHttpBaseUrl = useEnvironmentHttpBaseUrl(environmentId);
   const createAssetUrl = useAtomQueryRunner(assetEnvironment.createUrl, {
     reportFailure: false,
@@ -352,9 +430,15 @@ export default function FileBrowserPanel({
   // tree (via the tree's own rename machinery) instead of a dialog. The draft
   // records the kind and parent, and is cleared on commit or when any other
   // rename begins (a cancelled draft just removes the temporary row).
-  const inlineCreateDraftRef = useRef<CreateTarget | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
+  const inlineCreateDraftRef = useRef<InlineCreateDraft | null>(null);
+  // Capture phase sees focusout before Pierre's synchronous onBlur commit.
+  // Keep that intent until onRename has had a chance to consume it.
+  const discardInlineCreateDraftRef = useRef<InlineCreateDraft | null>(null);
+  const [deleteTargets, setDeleteTargets] = useState<ReadonlyArray<DeleteTarget> | null>(null);
   const [selectedFolderPath, setSelectedFolderPath] = useState<string | null>(null);
+  const [selectedTreePaths, setSelectedTreePaths] = useState<readonly string[]>([]);
+  const [pasteConflict, setPasteConflict] = useState<PasteConflict | null>(null);
+  const [fileClipboardRevision, setFileClipboardRevision] = useState(0);
 
   // Keep the tree in step with the real workspace: entry mutations refresh
   // the query on success, and the panel re-fetches whenever the window
@@ -375,10 +459,14 @@ export default function FileBrowserPanel({
 
   const deleteContentsCount = useMemo(
     () =>
-      deleteTarget !== null && deleteTarget.kind === "directory"
-        ? entries.filter((entry) => entry.path.startsWith(`${deleteTarget.path}/`)).length
-        : 0,
-    [deleteTarget, entries],
+      deleteTargets?.reduce(
+        (count, target) =>
+          target.kind === "directory"
+            ? count + entries.filter((entry) => entry.path.startsWith(`${target.path}/`)).length
+            : count,
+        0,
+      ) ?? 0,
+    [deleteTargets, entries],
   );
 
   // The tree renders rows in shadow DOM and its anchor rect is unreliable, so
@@ -461,27 +549,120 @@ export default function FileBrowserPanel({
     [cwd, environmentId, moveEntry, onOpenFile],
   );
 
+  const copySelection = useCallback(
+    (operation: "copy" | "cut", clickedTreePath: string, selectedTreePaths: readonly string[]) => {
+      const sourcePaths = getClipboardSourcePaths(
+        selectedTreePaths,
+        clickedTreePath,
+        entryKindsRef.current,
+      );
+      if (sourcePaths.length === 0) return;
+      setFileBrowserClipboard({ cwd, environmentId, operation, sourcePaths });
+      setFileClipboardRevision((revision) => revision + 1);
+      toastManager.add({
+        type: "success",
+        title: operation === "copy" ? "Files copied" : "Files cut",
+        description: `${sourcePaths.length} item${sourcePaths.length === 1 ? "" : "s"} ready to paste.`,
+      });
+    },
+    [cwd, environmentId],
+  );
+
+  const pasteIntoDirectory = useCallback(
+    (targetDirectory: string | null) => {
+      const clipboard = getFileBrowserClipboard();
+      if (clipboard === null) return;
+      if (clipboard.environmentId !== environmentId || clipboard.cwd !== cwd) {
+        toastManager.add({
+          type: "error",
+          title: "Paste unavailable",
+          description: "Files can only be pasted within the project where they were copied.",
+        });
+        return;
+      }
+      const conflicts = getPasteConflicts(
+        clipboard.sourcePaths,
+        targetDirectory,
+        entryKindsRef.current,
+      );
+      if (conflicts.length > 0) {
+        setPasteConflict({ operation: clipboard.operation, paths: conflicts });
+        return;
+      }
+      void pasteEntries({
+        environmentId,
+        input: {
+          cwd,
+          sourcePaths: clipboard.sourcePaths,
+          targetDirectory: targetDirectory ?? undefined,
+          operation: clipboard.operation,
+        },
+      }).then((result) => {
+        if (result._tag === "Failure") {
+          toastManager.add({
+            type: "error",
+            title: "Paste failed",
+            description: commandFailureMessage(result.cause),
+          });
+          return;
+        }
+        if (clipboard.operation === "cut") {
+          setFileBrowserClipboard(null);
+          setFileClipboardRevision((revision) => revision + 1);
+          const previewed = selectedPathRef.current;
+          const movedSource = previewed
+            ? clipboard.sourcePaths.find(
+                (sourcePath) => previewed === sourcePath || previewed.startsWith(`${sourcePath}/`),
+              )
+            : undefined;
+          if (previewed && movedSource) {
+            const destination = targetDirectory
+              ? `${targetDirectory}/${basenamePath(movedSource)}`
+              : basenamePath(movedSource);
+            onOpenFile(`${destination}${previewed.slice(movedSource.length)}`);
+          }
+        }
+        refreshEntries();
+        toastManager.add({
+          type: "success",
+          title: clipboard.operation === "copy" ? "Files pasted" : "Files moved",
+          description: `${clipboard.sourcePaths.length} item${clipboard.sourcePaths.length === 1 ? "" : "s"} ${clipboard.operation === "copy" ? "copied" : "moved"}.`,
+        });
+      });
+    },
+    [cwd, environmentId, onOpenFile, pasteEntries, refreshEntries],
+  );
+
   const commitDelete = useCallback(
-    (target: DeleteTarget) => {
-      void deleteEntry({ environmentId, input: { cwd, relativePath: target.path } }).then(
-        (result) => {
+    (targets: ReadonlyArray<DeleteTarget>) => {
+      const previewed = selectedPathRef.current;
+      void Promise.all(
+        targets.map(async (target) => {
+          const result = await deleteEntry({
+            environmentId,
+            input: { cwd, relativePath: target.path },
+          });
           if (result._tag === "Failure") {
             toastManager.add({
               type: "error",
               title: "Delete failed",
               description: commandFailureMessage(result.cause),
             });
-            return;
           }
-          const previewed = selectedPathRef.current;
-          if (
-            previewed !== null &&
-            (previewed === target.path || previewed.startsWith(`${target.path}/`))
-          ) {
-            onCloseFile(previewed);
-          }
-        },
-      );
+          return { result, target };
+        }),
+      ).then((results) => {
+        if (
+          previewed !== null &&
+          results.some(
+            ({ result, target }) =>
+              result._tag === "Success" &&
+              (previewed === target.path || previewed.startsWith(`${target.path}/`)),
+          )
+        ) {
+          onCloseFile(previewed);
+        }
+      });
     },
     [cwd, deleteEntry, environmentId, onCloseFile],
   );
@@ -532,9 +713,17 @@ export default function FileBrowserPanel({
       : { x: anchorRect.left, y: anchorRect.bottom };
     const items: Array<{ id: string; label: string }> = [];
     if (item.kind === "directory") {
-      items.push({ id: "new-file", label: "New file" }, { id: "new-folder", label: "New folder" });
+      items.push(
+        { id: "new-file", label: "New file" },
+        { id: "new-folder", label: "New folder" },
+        { id: "paste", label: "Paste" },
+      );
     }
-    items.push({ id: "copy-mention", label: "Copy mention" });
+    items.push(
+      { id: "copy", label: "Copy" },
+      { id: "cut", label: "Cut" },
+      { id: "copy-mention", label: "Copy mention" },
+    );
     items.push({ id: "add-to-chat", label: "Add to chat" });
     if (item.kind === "file") {
       items.push({ id: "open", label: "Open" });
@@ -546,6 +735,15 @@ export default function FileBrowserPanel({
     try {
       const clicked = await api.contextMenu.show(items, position);
       switch (clicked) {
+        case "copy":
+          copySelection("copy", item.path, model.getSelectedPaths());
+          return;
+        case "cut":
+          copySelection("cut", item.path, model.getSelectedPaths());
+          return;
+        case "paste":
+          pasteIntoDirectory(relativePath);
+          return;
         case "copy-mention":
           try {
             await writeTextToClipboard(mention);
@@ -591,9 +789,15 @@ export default function FileBrowserPanel({
         case "rename":
           setRenameTarget({ path: relativePath, kind: item.kind });
           return;
-        case "delete":
-          setDeleteTarget({ path: relativePath, kind: item.kind });
+        case "delete": {
+          const targets = getDeleteTargets(
+            model.getSelectedPaths(),
+            item.path,
+            entryKindsRef.current,
+          );
+          if (targets.length > 0) setDeleteTargets(targets);
           return;
+        }
         case "new-file":
           startInlineCreate("file", relativePath);
           return;
@@ -673,16 +877,19 @@ export default function FileBrowserPanel({
     renaming: {
       canRename: () => {
         inlineCreateDraftRef.current = null;
+        discardInlineCreateDraftRef.current = null;
         return true;
       },
       onRename: ({ sourcePath, destinationPath }) => {
         const draft = inlineCreateDraftRef.current;
         if (draft !== null) {
+          const discardDraft = discardInlineCreateDraftRef.current === draft;
           inlineCreateDraftRef.current = null;
-          const draftRowPath = stripTrailingSlash(sourcePath);
+          discardInlineCreateDraftRef.current = null;
           // The temporary row retires immediately; the created entry arrives
           // with the refreshed entries query (see `refreshListEntriesAfterMutation`).
-          model.remove(draftRowPath);
+          model.remove(draft.placeholderPath);
+          if (discardDraft) return;
           const name = basenamePath(stripTrailingSlash(destinationPath)).trim();
           if (name.length > 0) {
             commitCreate(draft.kind, draft.parentPath, name);
@@ -700,6 +907,7 @@ export default function FileBrowserPanel({
     initialExpansion: 0,
     icons: T3_PIERRE_ICONS,
     onSelectionChange: (selectedPaths) => {
+      setSelectedTreePaths(selectedPaths);
       // The drag controller's selection cache must track every change,
       // including reveal-driven ones, or drags act on a stale selection.
       dragMention.handleSelectionChange(selectedPaths);
@@ -756,7 +964,7 @@ export default function FileBrowserPanel({
           model.remove(tempRowPath);
           return;
         }
-        inlineCreateDraftRef.current = { kind, parentPath };
+        inlineCreateDraftRef.current = { kind, parentPath, placeholderPath: tempRowPath };
       });
       model.add(tempRowPath);
       if (removeIfCanceled) {
@@ -785,11 +993,13 @@ export default function FileBrowserPanel({
     const items: Array<{ id: string; label: string }> = [
       { id: "new-file", label: "New file" },
       { id: "new-folder", label: "New folder" },
+      { id: "paste", label: "Paste" },
     ];
     const clicked = await api.contextMenu.show(items, position ?? undefined);
     if (clicked === "new-file") startInlineCreate("file", null);
     if (clicked === "new-folder") startInlineCreate("folder", null);
-  }, [startInlineCreate]);
+    if (clicked === "paste") pasteIntoDirectory(null);
+  }, [pasteIntoDirectory, startInlineCreate]);
   useEffect(() => {
     const surface = treeSurfaceRef.current;
     if (surface === null) return;
@@ -837,9 +1047,13 @@ export default function FileBrowserPanel({
 
   useEffect(() => {
     if (previousTreePathsRef.current === treePaths) return;
+    const expandedPaths = getExpandedDirectoryPaths(previousTreePathsRef.current, (path) => {
+      const item = model.getItem(path);
+      return item?.isDirectory() === true && "isExpanded" in item && item.isExpanded();
+    });
     entryKindsRef.current = entryKinds;
     previousTreePathsRef.current = treePaths;
-    model.resetPaths(treePaths);
+    model.resetPaths(treePaths, { initialExpandedPaths: expandedPaths });
     model.setGitStatus(gitStatus);
   }, [entryKinds, gitStatus, model, treePaths]);
 
@@ -915,17 +1129,94 @@ export default function FileBrowserPanel({
     if (panel === null) {
       return;
     }
+    const handleFileClipboardShortcut = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || !(event.metaKey || event.ctrlKey) || event.altKey) return;
+      if (
+        event
+          .composedPath()
+          .some(
+            (node) =>
+              node instanceof HTMLElement &&
+              (node.isContentEditable ||
+                node instanceof HTMLInputElement ||
+                node instanceof HTMLTextAreaElement),
+          )
+      ) {
+        return;
+      }
+      const key = event.key.toLowerCase();
+      const selection = model.getSelectedPaths();
+      if (key === "c" || key === "x") {
+        const clickedPath = selection.at(-1);
+        if (clickedPath === undefined) return;
+        event.preventDefault();
+        copySelection(key === "c" ? "copy" : "cut", clickedPath, selection);
+        return;
+      }
+      if (key !== "v") return;
+      event.preventDefault();
+      const selectedDirectoryPath = selection.map(stripTrailingSlash).at(-1);
+      pasteIntoDirectory(
+        selectedDirectoryPath && entryKindsRef.current.get(selectedDirectoryPath) === "directory"
+          ? selectedDirectoryPath
+          : null,
+      );
+    };
     const handleDragStart = (event: DragEvent) => dragMention.handleDragStart(event);
     const handleDragEnd = () => dragMention.handleDragEnd();
+    panel.addEventListener("keydown", handleFileClipboardShortcut);
     panel.addEventListener("dragstart", handleDragStart, true);
     panel.addEventListener("dragend", handleDragEnd);
     return () => {
+      panel.removeEventListener("keydown", handleFileClipboardShortcut);
       panel.removeEventListener("dragstart", handleDragStart, true);
       panel.removeEventListener("dragend", handleDragEnd);
     };
-  }, [dragMention]);
+  }, [copySelection, dragMention, model, pasteIntoDirectory]);
+
+  useEffect(() => {
+    const surface = treeSurfaceRef.current;
+    if (surface === null) return;
+    const handleRenameFocusOut = (event: FocusEvent) => {
+      const renameInput = event
+        .composedPath()
+        .find(
+          (node): node is HTMLInputElement =>
+            node instanceof HTMLInputElement && node.dataset.itemRenameInput === "true",
+        );
+      const draft = inlineCreateDraftRef.current;
+      if (
+        renameInput === undefined ||
+        draft === null ||
+        !isUntouchedInlineCreateName(draft.placeholderPath, renameInput.value)
+      ) {
+        return;
+      }
+      // Pierre commits inline renames synchronously from onBlur. Capture the
+      // discard intent now so `onRename` can suppress that create. The
+      // microtask is a fallback for Pierre versions that treat this as a
+      // no-op rename and never call `onRename`.
+      discardInlineCreateDraftRef.current = draft;
+      queueMicrotask(() => {
+        if (discardInlineCreateDraftRef.current !== draft) return;
+        discardInlineCreateDraftRef.current = null;
+        if (inlineCreateDraftRef.current !== draft) return;
+        inlineCreateDraftRef.current = null;
+        model.remove(draft.placeholderPath);
+      });
+    };
+    surface.addEventListener("focusout", handleRenameFocusOut, true);
+    return () => surface.removeEventListener("focusout", handleRenameFocusOut, true);
+  }, [model]);
 
   const newFileParent = selectedFolderPath;
+  const selectedPasteTarget = selectedTreePaths.at(-1);
+  const pasteTargetDirectory =
+    selectedPasteTarget !== undefined &&
+    entryKinds.get(stripTrailingSlash(selectedPasteTarget)) === "directory"
+      ? stripTrailingSlash(selectedPasteTarget)
+      : null;
+  const deleteTarget = deleteTargets?.length === 1 ? (deleteTargets[0] ?? null) : null;
 
   return (
     <div
@@ -935,6 +1226,19 @@ export default function FileBrowserPanel({
     >
       <div className="surface-subheader gap-1 px-2" data-surface-subheader>
         <RefreshFilesButton isPending={entriesQuery.isPending} onRefresh={entriesQuery.refresh} />
+        <FileClipboardButtons
+          canCopy={selectedTreePaths.length > 0}
+          canPaste={getFileBrowserClipboard() !== null || fileClipboardRevision > 0}
+          onCopy={() => {
+            const clickedPath = selectedTreePaths.at(-1);
+            if (clickedPath !== undefined) copySelection("copy", clickedPath, selectedTreePaths);
+          }}
+          onCut={() => {
+            const clickedPath = selectedTreePaths.at(-1);
+            if (clickedPath !== undefined) copySelection("cut", clickedPath, selectedTreePaths);
+          }}
+          onPaste={() => pasteIntoDirectory(pasteTargetDirectory)}
+        />
         <NewFileButton
           onNewFile={() => startInlineCreate("file", newFileParent)}
           onNewFolder={() => startInlineCreate("folder", newFileParent)}
@@ -986,20 +1290,44 @@ export default function FileBrowserPanel({
         />
       )}
       <AlertDialog
-        open={deleteTarget !== null}
+        open={pasteConflict !== null}
         onOpenChange={(open) => {
-          if (!open) setDeleteTarget(null);
+          if (!open) setPasteConflict(null);
+        }}
+      >
+        <AlertDialogPopup>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Paste blocked to protect existing files</AlertDialogTitle>
+            <AlertDialogDescription>
+              {pasteConflict?.paths.length === 1
+                ? `"${pasteConflict.paths[0]}" already exists or would contain itself. ${pasteConflict.operation === "copy" ? "Copy" : "Move"} did not overwrite anything.`
+                : `${pasteConflict?.paths.length ?? 0} destinations already exist or would contain themselves. ${pasteConflict?.operation === "copy" ? "Copy" : "Move"} did not overwrite anything.`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button type="button" />}>Close</AlertDialogClose>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
+      <AlertDialog
+        open={deleteTargets !== null}
+        onOpenChange={(open) => {
+          if (!open) setDeleteTargets(null);
         }}
       >
         <AlertDialogPopup>
           <AlertDialogHeader>
             <AlertDialogTitle>
-              Delete "{deleteTarget?.path ? basenamePath(deleteTarget.path) : ""}"?
+              {deleteTarget
+                ? `Delete "${basenamePath(deleteTarget.path)}"?`
+                : `Delete ${deleteTargets?.length ?? 0} items?`}
             </AlertDialogTitle>
             <AlertDialogDescription>
               {deleteTarget?.kind === "directory" && deleteContentsCount > 0
                 ? `This will permanently delete the folder and everything inside it (${deleteContentsCount} item${deleteContentsCount === 1 ? "" : "s"}).`
-                : "This action cannot be undone."}
+                : deleteTargets !== null && deleteTargets.length > 1
+                  ? "This will permanently delete the selected items. This action cannot be undone."
+                  : "This action cannot be undone."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -1010,10 +1338,10 @@ export default function FileBrowserPanel({
               type="button"
               variant="destructive"
               onClick={() => {
-                if (deleteTarget === null) return;
-                const target = deleteTarget;
-                setDeleteTarget(null);
-                commitDelete(target);
+                if (deleteTargets === null) return;
+                const targets = deleteTargets;
+                setDeleteTargets(null);
+                commitDelete(targets);
               }}
             >
               Delete

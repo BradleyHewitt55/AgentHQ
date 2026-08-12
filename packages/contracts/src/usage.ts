@@ -27,6 +27,43 @@ export const UsageProviderKind = Schema.Literals(["claude", "codex"]);
 export type UsageProviderKind = typeof UsageProviderKind.Type;
 
 /**
+ * A provider-reported subscription window, distinct from transcript token
+ * totals and API-equivalent cost. `usedPercent` is reported by the provider.
+ */
+export const SubscriptionRateLimitWindow = Schema.Struct({
+  usedPercent: Schema.Number,
+  resetsAt: Schema.NullOr(Schema.String),
+  /** Distinguishes Claude's model-specific weekly windows when it reports them. */
+  label: Schema.optional(TrimmedNonEmptyString),
+});
+export type SubscriptionRateLimitWindow = typeof SubscriptionRateLimitWindow.Type;
+
+/** Sparse update from a provider runtime event. Omitted windows retain their last value. */
+export const SubscriptionRateLimitsUpdate = Schema.Struct({
+  provider: UsageProviderKind,
+  fiveHour: Schema.optional(SubscriptionRateLimitWindow),
+  weekly: Schema.optional(Schema.Array(SubscriptionRateLimitWindow)),
+});
+export type SubscriptionRateLimitsUpdate = typeof SubscriptionRateLimitsUpdate.Type;
+
+/** Latest subscription-limit snapshot for one provider account on an environment. */
+export const ProviderSubscriptionUsage = Schema.Struct({
+  provider: UsageProviderKind,
+  status: Schema.Literals(["available", "unavailable"]),
+  fiveHour: Schema.NullOr(SubscriptionRateLimitWindow),
+  weekly: Schema.Array(SubscriptionRateLimitWindow),
+  updatedAt: Schema.NullOr(Schema.String),
+});
+export type ProviderSubscriptionUsage = typeof ProviderSubscriptionUsage.Type;
+
+/** Environment-local provider subscription usage. No transcript totals are included. */
+export const SubscriptionUsageSummary = Schema.Struct({
+  readAt: Schema.String,
+  providers: Schema.Array(ProviderSubscriptionUsage),
+});
+export type SubscriptionUsageSummary = typeof SubscriptionUsageSummary.Type;
+
+/**
  * A calendar day in the reporting time zone, formatted `YYYY-MM-DD`.
  *
  * Days are bucketed server-side so that a turn always lands on the day the user

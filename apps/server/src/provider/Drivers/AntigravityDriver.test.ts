@@ -44,6 +44,8 @@ describe("AntigravityDriver", () => {
       expect(snapshot.installed).toBe(false);
       expect(snapshot.status).toBe("error");
       expect(snapshot.auth.status).toBe("unknown");
+      // Antigravity's CLI protocol has no discoverable prompt-command catalog.
+      expect(snapshot.slashCommands).toEqual([]);
     }),
   );
 

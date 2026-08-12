@@ -131,6 +131,13 @@ export function createProjectEnvironmentAtoms<R, E>(
       concurrency: fileMutationConcurrency,
       onSuccess: refreshListEntriesAfterMutation,
     }),
+    pasteEntries: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:projects:paste-entries",
+      tag: WS_METHODS.projectsPaste,
+      scheduler: fileScheduler,
+      concurrency: fileMutationConcurrency,
+      onSuccess: refreshListEntriesAfterMutation,
+    }),
     moveEntry: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:projects:move-entry",
       tag: WS_METHODS.projectsMove,

@@ -23,6 +23,7 @@ import type {
   ProviderStopSessionInput,
   ThreadId,
   ProviderTurnStartResult,
+  SubscriptionUsageSummary,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
@@ -96,6 +97,9 @@ export interface ProviderServiceShape {
   readonly getInstanceInfo: (
     instanceId: ProviderInstanceId,
   ) => Effect.Effect<ProviderInstanceRoutingInfo, ProviderServiceError>;
+
+  /** Latest subscription limits reported by ChatGPT/Codex and Claude runtimes. */
+  readonly getSubscriptionUsage: Effect.Effect<SubscriptionUsageSummary>;
 
   /**
    * Roll back provider conversation state by a number of turns.

@@ -47,6 +47,26 @@ describe("ServerProvider", () => {
     expect(parsed.updateState).toBeUndefined();
   });
 
+  it("decodes provider command metadata", () => {
+    const parsed = decodeServerProvider({
+      ...baseProviderSnapshot,
+      slashCommands: [
+        { name: "review", description: "Review the current change.", input: { hint: "[path]" } },
+      ],
+    });
+
+    expect(parsed.slashCommands).toEqual([
+      { name: "review", description: "Review the current change.", input: { hint: "[path]" } },
+    ]);
+  });
+
+  it("rejects malformed provider command names", () => {
+    expect(() =>
+      decodeServerProvider({ ...baseProviderSnapshot, slashCommands: [{ name: "" }] }),
+    ).toThrow();
+    expect(() => decodeServerProvider({ ...baseProviderSnapshot, slashCommands: [{}] })).toThrow();
+  });
+
   it("defaults one-click update support when decoding older advisory snapshots", () => {
     const parsed = decodeServerProvider({
       instanceId: "codex",

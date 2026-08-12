@@ -10,6 +10,7 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import {
+  dedupeProviderSlashCommands,
   isCommandMissingCause,
   providerModelsFromSettings,
   spawnAndCollect,
@@ -69,6 +70,21 @@ describe("providerModelsFromSettings", () => {
 
     expect(models.map((model) => model.slug)).toEqual(["claude-opus-4-8", "opus"]);
     expect(models[1]?.isCustom).toBe(true);
+  });
+});
+
+describe("dedupeProviderSlashCommands", () => {
+  it("deduplicates case-insensitively and fills missing command metadata", () => {
+    expect(
+      dedupeProviderSlashCommands([
+        { name: "Review" },
+        { name: "review", description: "Review the current change.", input: { hint: "[path]" } },
+        { name: "deploy", description: "Deploy." },
+      ]),
+    ).toEqual([
+      { name: "Review", description: "Review the current change.", input: { hint: "[path]" } },
+      { name: "deploy", description: "Deploy." },
+    ]);
   });
 });
 

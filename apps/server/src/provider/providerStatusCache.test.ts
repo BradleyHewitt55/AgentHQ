@@ -84,6 +84,9 @@ it.layer(NodeServices.layer)("providerStatusCache", (it) => {
       const claudeProvider = makeProvider(CLAUDE_AGENT_DRIVER, {
         status: "warning",
         auth: { status: "unknown" },
+        slashCommands: [
+          { name: "review", description: "Review the current change.", input: { hint: "[path]" } },
+        ],
       });
       const openCodeProvider = makeProvider(OPENCODE_DRIVER, {
         status: "warning",

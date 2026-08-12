@@ -431,6 +431,8 @@ const emptyCodexModelsFromSettings = (codexSettings: CodexSettings): ServerProvi
   }));
 };
 
+// The Codex app-server schema exposes models, skills, and account data, but
+// no provider-command catalog. Keep this instance capability explicitly empty.
 const makePendingCodexProvider = (
   codexSettings: CodexSettings,
 ): Effect.Effect<ServerProviderDraft> =>

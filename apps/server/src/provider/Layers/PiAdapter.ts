@@ -12,6 +12,7 @@ import {
   type ProviderSendTurnInput,
   type ProviderSession,
   RuntimeItemId,
+  RuntimeTaskId,
   ThreadId,
   TurnId,
   type PiSettings,
@@ -55,12 +56,82 @@ type PiContext = {
   assistantItemId: RuntimeItemId | undefined;
   reasoningItemId: RuntimeItemId | undefined;
   toolItems: Map<string, RuntimeItemId>;
+  piSubagentIds: Set<string>;
   turns: Array<{ id: TurnId; items: unknown[] }>;
   abortInFlight: boolean;
   stopped: boolean;
 };
 
 const itemId = () => RuntimeItemId.make(NodeCrypto.randomUUID());
+
+const asRecord = (value: unknown) =>
+  typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
+
+const asNonEmptyString = (value: unknown) =>
+  typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+
+// T3's Pi subagent extension reports its durable child IDs in tool results
+// and sends a custom result message when background work settles.
+const piSubagentStatus = (value: unknown) => {
+  switch (value) {
+    case "running":
+      return "running" as const;
+    case "done":
+      return "completed" as const;
+    case "error":
+      return "failed" as const;
+    default:
+      return undefined;
+  }
+};
+
+const piSubagentPaths = (value: unknown) => {
+  if (!Array.isArray(value)) return [];
+  return value.reduce<string[]>((paths, entry) => {
+    const path = asNonEmptyString(entry);
+    return path && !paths.includes(path) ? [...paths, path] : paths;
+  }, []);
+};
+
+const piSubagentDetails = (value: unknown) => {
+  const record = asRecord(value);
+  const id = asNonEmptyString(record?.id);
+  if (!id) return undefined;
+  return {
+    id,
+    title: asNonEmptyString(record?.title) ?? id,
+    harness: asNonEmptyString(record?.harness),
+    model: asNonEmptyString(record?.model),
+    status: piSubagentStatus(record?.status),
+    // Pi's base SDK does not stream child tool calls to the parent. Only
+    // show paths explicitly provided by a subagent extension snapshot.
+    activeFiles: piSubagentPaths(record?.activeFiles ?? record?.workingFiles),
+    changedFiles: piSubagentPaths(record?.changedFiles),
+  };
+};
+
+const piSubagentDetailsFromResult = (result: unknown) =>
+  piSubagentDetails(asRecord(result)?.details);
+
+const piSubagentResultsFromResult = (result: unknown) => {
+  const details = asRecord(asRecord(result)?.details);
+  const entries = [
+    ...(Array.isArray(details?.subagents) ? details.subagents : []),
+    ...(Array.isArray(details?.results) ? details.results : []),
+  ];
+  return entries.flatMap((entry) => {
+    const parsed = piSubagentDetails(entry);
+    return parsed ? [parsed] : [];
+  });
+};
+
+const piSubagentResultText = (value: unknown) => {
+  if (typeof value === "string") return asNonEmptyString(value);
+  if (!Array.isArray(value)) return undefined;
+  return value
+    .map((entry) => asNonEmptyString(asRecord(entry)?.text))
+    .find((text) => text !== undefined);
+};
 
 /** The Pi SDK addresses models as `provider/id`; one parser for every call site. */
 const resolveModel = (runtime: PiModelRuntime, slug: string) => {
@@ -156,8 +227,100 @@ export const makePiAdapter = (
 
     const addItem = (context: PiContext, item: unknown) => currentTurn(context)?.items.push(item);
 
+    const startTurn = (context: PiContext) => {
+      const turnId = TurnId.make(NodeCrypto.randomUUID());
+      context.activeTurnId = turnId;
+      context.turns.push({ id: turnId, items: [] });
+      context.providerSession = {
+        ...context.providerSession,
+        status: "running",
+        activeTurnId: turnId,
+        updatedAt: now(),
+      };
+      emit(context, {
+        type: "turn.started",
+        turnId,
+        payload: {
+          model: context.agent.model
+            ? `${context.agent.model.provider}/${context.agent.model.id}`
+            : undefined,
+        },
+        raw: { source: "pi.sdk.event", method: "prompt", payload: {} },
+      });
+      return turnId;
+    };
+
+    const emitPiSubagent = (
+      context: PiContext,
+      details: NonNullable<ReturnType<typeof piSubagentDetails>>,
+      summary?: string,
+    ) => {
+      const taskId = RuntimeTaskId.make(details.id);
+      if (!context.piSubagentIds.has(details.id)) {
+        context.piSubagentIds.add(details.id);
+        emit(context, {
+          type: "task.started",
+          turnId: context.activeTurnId,
+          payload: {
+            taskId,
+            description: details.title,
+            taskType: "subagent",
+            title: details.title,
+            ...(details.harness ? { role: `${details.harness} subagent` } : {}),
+            ...(details.model ? { model: details.model } : {}),
+            activeFiles: details.activeFiles,
+            ...(details.changedFiles.length > 0 ? { changedFiles: details.changedFiles } : {}),
+          },
+          raw: { source: "pi.sdk.event", method: "subagent", payload: details },
+        });
+      }
+      if (details.status === "completed" || details.status === "failed") {
+        emit(context, {
+          type: "task.completed",
+          turnId: context.activeTurnId,
+          payload: {
+            taskId,
+            status: details.status,
+            ...(summary ? { summary } : {}),
+            taskType: "subagent",
+            title: details.title,
+            ...(details.harness ? { role: `${details.harness} subagent` } : {}),
+            ...(details.model ? { model: details.model } : {}),
+            activeFiles: [],
+            ...(details.changedFiles.length > 0 ? { changedFiles: details.changedFiles } : {}),
+          },
+          raw: { source: "pi.sdk.event", method: "subagent", payload: details },
+        });
+        return;
+      }
+      emit(context, {
+        type: "task.progress",
+        turnId: context.activeTurnId,
+        payload: {
+          taskId,
+          description: details.title,
+          status: "running",
+          summary: summary ?? "Running in background",
+          taskType: "subagent",
+          title: details.title,
+          ...(details.harness ? { role: `${details.harness} subagent` } : {}),
+          ...(details.model ? { model: details.model } : {}),
+          activeFiles: details.activeFiles,
+          ...(details.changedFiles.length > 0 ? { changedFiles: details.changedFiles } : {}),
+        },
+        raw: { source: "pi.sdk.event", method: "subagent", payload: details },
+      });
+    };
+
     const handleEvent = (context: PiContext, event: AgentSessionEvent) => {
       const raw = { source: "pi.sdk.event" as const, method: event.type, payload: event };
+      // Extension messages with triggerTurn restart the Pi agent after its
+      // foreground turn settled. Give that continuation its own lifecycle so
+      // its result and sibling task state stay visible together.
+      if (event.type === "agent_start" && !context.activeTurnId) {
+        startTurn(context);
+        return;
+      }
       if (event.type === "message_update") {
         const update = event.assistantMessageEvent;
         if (update.type === "text_delta") {
@@ -206,6 +369,22 @@ export const makePiAdapter = (
         return;
       }
       if (event.type === "tool_execution_end") {
+        if (!event.isError && event.toolName === "subagent_spawn") {
+          const details = piSubagentDetailsFromResult(event.result);
+          if (details) emitPiSubagent(context, details);
+        }
+        if (
+          !event.isError &&
+          ["subagent_list", "subagent_wait", "subagent_cancel"].includes(event.toolName)
+        ) {
+          for (const details of piSubagentResultsFromResult(event.result)) {
+            emitPiSubagent(context, details);
+          }
+        }
+        if (!event.isError && event.toolName === "subagent_check") {
+          const details = piSubagentDetailsFromResult(event.result);
+          if (details) emitPiSubagent(context, details);
+        }
         const id = context.toolItems.get(event.toolCallId) ?? itemId();
         emit(context, {
           type: "item.completed",
@@ -237,6 +416,15 @@ export const makePiAdapter = (
           },
         });
         context.toolItems.delete(event.toolCallId);
+        return;
+      }
+      if (event.type === "message_end" && event.message.role === "custom") {
+        if (event.message.customType === "subagent-result") {
+          const details = piSubagentDetails(event.message.details);
+          if (details) {
+            emitPiSubagent(context, details, piSubagentResultText(event.message.content));
+          }
+        }
         return;
       }
       if (event.type === "agent_settled" && context.activeTurnId) {
@@ -399,6 +587,7 @@ export const makePiAdapter = (
         assistantItemId: undefined,
         reasoningItemId: undefined,
         toolItems: new Map(),
+        piSubagentIds: new Set(),
         turns: [],
         abortInFlight: false,
         stopped: false,
@@ -465,27 +654,7 @@ export const makePiAdapter = (
       }
       const activeTurnId = context.activeTurnId;
       const streaming = activeTurnId !== undefined;
-      const turnId = activeTurnId ?? TurnId.make(NodeCrypto.randomUUID());
-      if (!streaming) {
-        context.activeTurnId = turnId;
-        context.turns.push({ id: turnId, items: [] });
-        context.providerSession = {
-          ...context.providerSession,
-          status: "running",
-          activeTurnId: turnId,
-          updatedAt: now(),
-        };
-        emit(context, {
-          type: "turn.started",
-          turnId,
-          payload: {
-            model: context.agent.model
-              ? `${context.agent.model.provider}/${context.agent.model.id}`
-              : undefined,
-          },
-          raw: { source: "pi.sdk.event", method: "prompt", payload: {} },
-        });
-      }
+      const turnId = activeTurnId ?? startTurn(context);
       const images = yield* buildImages(input);
       const prompt = input.input?.trim();
       // The Pi SDK throws when `prompt` is called mid-stream. A follow-up

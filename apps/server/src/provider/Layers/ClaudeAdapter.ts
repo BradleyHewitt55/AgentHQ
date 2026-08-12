@@ -95,6 +95,7 @@ import {
 } from "../Errors.ts";
 import { type ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
+import { normalizeClaudeSubscriptionRateLimits } from "../SubscriptionRateLimits.ts";
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.fromJsonString(Schema.Unknown));
 const decodeUnknownJsonStringExit = Schema.decodeUnknownExit(Schema.fromJsonString(Schema.Unknown));
 
@@ -268,6 +269,8 @@ export interface ClaudeAdapterLiveOptions {
   }) => ClaudeQueryRuntime;
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
+  /** Re-discover this instance's command templates after the SDK reports a change. */
+  readonly onCommandsChanged?: Effect.Effect<void>;
 }
 
 function isUuid(value: string): boolean {
@@ -3365,6 +3368,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       case "local_command_output":
       case "plugin_install":
       case "commands_changed":
+        yield* options?.onCommandsChanged ?? Effect.void;
+        return;
       case "memory_recall":
       case "elicitation_complete":
         return;
@@ -3472,13 +3477,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
 
     if (message.type === "rate_limit_event") {
-      yield* offerRuntimeEvent({
-        ...base,
-        type: "account.rate-limits.updated",
-        payload: {
-          rateLimits: message,
-        },
-      });
+      const rateLimits = normalizeClaudeSubscriptionRateLimits(message.rate_limit_info);
+      if (rateLimits) {
+        yield* offerRuntimeEvent({
+          ...base,
+          type: "account.rate-limits.updated",
+          payload: { rateLimits },
+        });
+      }
       return;
     }
   });

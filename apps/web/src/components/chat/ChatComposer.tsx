@@ -38,6 +38,7 @@ import {
   collapseExpandedComposerCursor,
   detectComposerTrigger,
   expandCollapsedComposerCursor,
+  extendComposerTriggerReplacementRange,
   replaceTextRange,
   shouldSubmitComposerOnEnter,
 } from "../../composer-logic";
@@ -85,7 +86,11 @@ import {
 } from "../composerFooterLayout";
 import { type ComposerPromptEditorHandle, ComposerPromptEditor } from "../ComposerPromptEditor";
 import { ProviderModelPicker } from "./ProviderModelPicker";
-import { type ComposerCommandItem, ComposerCommandMenu } from "./ComposerCommandMenu";
+import {
+  type ComposerCommandItem,
+  ComposerCommandMenu,
+  type ComposerSlashCommandProviderState,
+} from "./ComposerCommandMenu";
 import { ComposerPendingApprovalActions } from "./ComposerPendingApprovalActions";
 import { CompactComposerControlsMenu } from "./CompactComposerControlsMenu";
 import { ComposerPrimaryActions } from "./ComposerPrimaryActions";
@@ -94,6 +99,7 @@ import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { ComposerPlanFollowUpBanner } from "./ComposerPlanFollowUpBanner";
 import { ComposerControl, ComposerControlIcon, ComposerSelectControl } from "./ComposerControl";
 import { resolveComposerMenuActiveItemId } from "./composerMenuHighlight";
+import { providerSlashCommandItems } from "./composerSlashCommandItems";
 import { searchSlashCommandItems } from "./composerSlashCommandSearch";
 import {
   getComposerPromptInjectionState,
@@ -262,17 +268,6 @@ const COMPOSER_FLOATING_LAYER_SELECTOR = [
   '[data-slot="autocomplete-popup"]',
 ].join(",");
 
-const extendReplacementRangeForTrailingSpace = (
-  text: string,
-  rangeEnd: number,
-  replacement: string,
-): number => {
-  if (!replacement.endsWith(" ")) {
-    return rangeEnd;
-  }
-  return text[rangeEnd] === " " ? rangeEnd + 1 : rangeEnd;
-};
-
 const syncTerminalContextsByIds = (
   contexts: ReadonlyArray<TerminalContextDraft>,
   ids: ReadonlyArray<string>,
@@ -293,6 +288,38 @@ const terminalContextIdListsEqual = (
 function isInsideComposerFloatingLayer(element: Element): boolean {
   return element.closest(COMPOSER_FLOATING_LAYER_SELECTOR) !== null;
 }
+
+const ComposerSendLockControl = memo(function ComposerSendLockControl(props: {
+  locked: boolean;
+  onToggle: () => void;
+}) {
+  const label = props.locked ? "Unlock prompt sending" : "Lock prompt sending";
+  const Icon = props.locked ? LockIcon : LockOpenIcon;
+
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <ComposerControl
+            className={cn(
+              "shrink-0 text-secondary-label hover:text-foreground",
+              props.locked && "bg-accent text-accent-foreground hover:bg-accent/80",
+            )}
+            type="button"
+            aria-label={label}
+            aria-pressed={props.locked}
+            onClick={props.onToggle}
+          />
+        }
+      >
+        <ComposerControlIcon icon={Icon} />
+      </TooltipTrigger>
+      <TooltipPopup side="top">
+        {props.locked ? "Prompt sending is locked" : "Prevent prompts from being sent"}
+      </TooltipPopup>
+    </Tooltip>
+  );
+});
 
 const ComposerFooterModeControls = memo(function ComposerFooterModeControls(props: {
   showInteractionModeToggle: boolean;
@@ -391,6 +418,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   activeContextWindow: ReturnType<typeof deriveLatestContextWindowSnapshot>;
   activeThreadProviderDisplayName: string | null;
   isPreparingWorktree: boolean;
+  isSendLocked: boolean;
   pendingAction: {
     questionIndex: number;
     isLastQuestion: boolean;
@@ -433,6 +461,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
         isConnecting={props.isConnecting}
         isEnvironmentUnavailable={props.isEnvironmentUnavailable}
         isPreparingWorktree={props.isPreparingWorktree}
+        isSendLocked={props.isSendLocked}
         hasSendableContent={props.hasSendableContent}
         preserveComposerFocusOnPointerDown={props.preserveComposerFocusOnPointerDown ?? false}
         onPreviousPendingQuestion={props.onPreviousPendingQuestion}
@@ -673,6 +702,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // ------------------------------------------------------------------
   const composerDraft = useComposerThreadDraft(composerDraftTarget);
   const prompt = composerDraft.prompt;
+  const isPromptSendingLocked = composerDraft.sendLocked;
   const composerImages = composerDraft.images;
   const composerTerminalContexts = composerDraft.terminalContexts;
   const composerElementContexts = composerDraft.elementContexts;
@@ -681,6 +711,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const nonPersistedComposerImageIds = composerDraft.nonPersistedImageIds;
 
   const setComposerDraftPrompt = useComposerDraftStore((store) => store.setPrompt);
+  const setComposerDraftSendLocked = useComposerDraftStore((store) => store.setSendLocked);
   const addComposerDraftImage = useComposerDraftStore((store) => store.addImage);
   const addComposerDraftImages = useComposerDraftStore((store) => store.addImages);
   const removeComposerDraftImage = useComposerDraftStore((store) => store.removeImage);
@@ -849,6 +880,29 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     () => selectedProviderEntry?.models ?? [],
     [selectedProviderEntry],
   );
+  const selectedProviderSlashCommandState = useMemo<ComposerSlashCommandProviderState>(() => {
+    if (
+      !selectedProviderEntry ||
+      !selectedProviderEntry.enabled ||
+      !selectedProviderEntry.installed ||
+      !selectedProviderEntry.isAvailable ||
+      selectedProviderEntry.status === "disabled" ||
+      selectedProviderEntry.status === "error"
+    ) {
+      return "unavailable";
+    }
+    // The wire snapshot has no separate discovery lifecycle yet. A warning
+    // with no cached commands is the only state that can represent the
+    // in-flight/indeterminate Claude initialization probe without guessing
+    // commands from another provider instance.
+    if (
+      selectedProviderEntry.status === "warning" &&
+      selectedProviderStatus?.slashCommands.length === 0
+    ) {
+      return "loading";
+    }
+    return "available";
+  }, [selectedProviderEntry, selectedProviderStatus?.slashCommands.length]);
 
   const composerPromptInjectionState = useMemo(
     () => getComposerPromptInjectionState(prompt),
@@ -965,6 +1019,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const composerSurfaceRef = useRef<HTMLDivElement>(null);
   const composerSelectLockRef = useRef(false);
   const composerMenuOpenRef = useRef(false);
+  const composerMenuDismissedRef = useRef(false);
   const composerMenuItemsRef = useRef<ComposerCommandItem[]>([]);
   const activeComposerMenuItemRef = useRef<ComposerCommandItem | null>(null);
   const composerBlurFrameRef = useRef<number | null>(null);
@@ -1064,18 +1119,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
             ] as const)
           : []),
       ] satisfies ReadonlyArray<Extract<ComposerCommandItem, { type: "slash-command" }>>;
-      const providerSlashCommandItems = (selectedProviderStatus?.slashCommands ?? []).map(
-        (command) => ({
-          id: `provider-slash-command:${selectedProvider}:${command.name}`,
-          type: "provider-slash-command" as const,
-          provider: selectedProvider,
-          command,
-          label: `/${command.name}`,
-          description: command.description ?? command.input?.hint ?? "Run provider command",
-        }),
-      );
+      const providerCommandItems =
+        selectedProviderSlashCommandState === "unavailable"
+          ? []
+          : providerSlashCommandItems({
+              instanceId: selectedInstanceId,
+              provider: selectedProvider,
+              slashCommands: selectedProviderStatus?.slashCommands ?? [],
+            });
       const query = composerTrigger.query.trim().toLowerCase();
-      const slashCommandItems = [...builtInSlashCommandItems, ...providerSlashCommandItems];
+      const slashCommandItems = [...builtInSlashCommandItems, ...providerCommandItems];
       if (!query) {
         return slashCommandItems;
       }
@@ -1100,14 +1153,18 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   }, [
     composerTrigger,
     planModeUiEnabled,
+    selectedInstanceId,
     selectedProvider,
+    selectedProviderSlashCommandState,
     selectedProviderStatus,
     workspaceEntries.entries,
   ]);
 
   const composerMenuOpen = Boolean(composerTrigger);
   const composerMenuSearchKey = composerTrigger
-    ? `${composerTrigger.kind}:${composerTrigger.query.trim().toLowerCase()}`
+    ? `${composerTrigger.kind}:${composerTrigger.query.trim().toLowerCase()}:${
+        composerTrigger.kind === "slash-command" ? selectedInstanceId : ""
+      }`
     : null;
   const activeComposerMenuItem = useMemo(() => {
     const activeItemId = resolveComposerMenuActiveItemId({
@@ -1167,15 +1224,19 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   ]);
 
   const isComposerMenuLoading =
-    composerTriggerKind === "path" && pathTriggerQuery.length > 0 && workspaceEntries.isPending;
+    (composerTriggerKind === "path" && pathTriggerQuery.length > 0 && workspaceEntries.isPending) ||
+    (composerTriggerKind === "slash-command" && selectedProviderSlashCommandState === "loading");
   const composerMenuEmptyState = useMemo(() => {
     if (composerTriggerKind === "skill") {
       return "No skills found. Try / to browse provider commands.";
     }
-    return composerTriggerKind === "path"
-      ? "No matching files or folders."
-      : "No matching command.";
-  }, [composerTriggerKind]);
+    if (composerTriggerKind === "slash-command") {
+      return selectedProviderSlashCommandState === "unavailable"
+        ? `${selectedProviderEntry?.displayName ?? "Selected provider"} is unavailable.`
+        : "No matching command.";
+    }
+    return "No matching files or folders.";
+  }, [composerTriggerKind, selectedProviderEntry?.displayName, selectedProviderSlashCommandState]);
 
   // ------------------------------------------------------------------
   // Provider traits UI
@@ -1239,8 +1300,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     noProviderAvailable ||
     projectSelectionRequired ||
     environmentUnavailable !== null ||
+    isPromptSendingLocked ||
     !composerSendState.hasSendableContent;
-  const collapsedComposerPrimaryActionLabel = "Send message";
+  const collapsedComposerPrimaryActionLabel = isPromptSendingLocked
+    ? "Prompt sending is locked"
+    : "Send message";
   const showMobilePendingAnswerActions =
     isMobileViewport && !isComposerCollapsedMobile && pendingPrimaryAction !== null;
 
@@ -1543,6 +1607,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         return;
       }
       promptRef.current = nextPrompt;
+      composerMenuDismissedRef.current = false;
       setPrompt(nextPrompt);
       if (!terminalContextIdListsEqual(composerTerminalContexts, terminalContextIds)) {
         setComposerDraftTerminalContexts(
@@ -1660,7 +1725,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       if (!trigger) return;
       if (item.type === "path") {
         const replacement = `${serializeComposerFileLink(item.path)} `;
-        const replacementRangeEnd = extendReplacementRangeForTrailingSpace(
+        const replacementRangeEnd = extendComposerTriggerReplacementRange(
           snapshot.value,
           trigger.rangeEnd,
           replacement,
@@ -1699,7 +1764,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       }
       if (item.type === "provider-slash-command") {
         const replacement = `/${item.command.name} `;
-        const replacementRangeEnd = extendReplacementRangeForTrailingSpace(
+        const replacementRangeEnd = extendComposerTriggerReplacementRange(
           snapshot.value,
           trigger.rangeEnd,
           replacement,
@@ -1717,7 +1782,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       }
       if (item.type === "skill") {
         const replacement = `$${item.skill.name} `;
-        const replacementRangeEnd = extendReplacementRangeForTrailingSpace(
+        const replacementRangeEnd = extendComposerTriggerReplacementRange(
           snapshot.value,
           trigger.rangeEnd,
           replacement,
@@ -1807,7 +1872,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
 
   const submitComposer = useCallback(
     (event?: { preventDefault: () => void }) => {
-      if (noProviderAvailable || isSendDisabled) {
+      if (isPromptSendingLocked || noProviderAvailable || isSendDisabled) {
         event?.preventDefault();
         return;
       }
@@ -1832,6 +1897,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     [
       activeThreadId,
       blurMobileComposerAfterSend,
+      isPromptSendingLocked,
       isSendDisabled,
       noProviderAvailable,
       onSend,
@@ -1865,16 +1931,29 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // Callbacks: command key
   // ------------------------------------------------------------------
   const onComposerCommandKey = (
-    key: "ArrowDown" | "ArrowUp" | "Enter" | "Tab",
+    key: "ArrowDown" | "ArrowUp" | "Enter" | "Escape" | "Tab",
     event: KeyboardEvent,
   ) => {
+    if (key === "Escape" && composerMenuOpenRef.current) {
+      // Closing the picker must leave the draft exactly as typed. The next
+      // input change recomputes its trigger and may open a fresh picker.
+      composerMenuDismissedRef.current = true;
+      setComposerTrigger(null);
+      setComposerHighlightedItemId(null);
+      setComposerHighlightedSearchKey(null);
+      return true;
+    }
+    if (key === "Enter" && isPromptSendingLocked) {
+      return false;
+    }
     if (key === "Tab" && event.shiftKey) {
       if (!planModeUiEnabled) return false;
       toggleInteractionMode();
       return true;
     }
     const { trigger } = resolveActiveComposerTrigger();
-    const menuIsActive = composerMenuOpenRef.current || trigger !== null;
+    const menuIsActive =
+      !composerMenuDismissedRef.current && (composerMenuOpenRef.current || trigger !== null);
     if (menuIsActive) {
       const currentItems = composerMenuItemsRef.current;
       const selectedItem = activeComposerMenuItemRef.current ?? currentItems[0];
@@ -1893,7 +1972,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     }
     if (
       key === "Enter" &&
-      shouldSubmitComposerOnEnter({ isMobileViewport, shiftKey: event.shiftKey })
+      shouldSubmitComposerOnEnter({
+        isMobileViewport,
+        isSendLocked: isPromptSendingLocked,
+        shiftKey: event.shiftKey,
+      })
     ) {
       submitComposer();
       return true;
@@ -2478,8 +2561,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     void onInterrupt();
   }, [onInterrupt]);
   const handleImplementPlanInNewThreadPrimaryAction = useCallback(() => {
+    if (isPromptSendingLocked) return;
     void onImplementPlanInNewThread();
-  }, [onImplementPlanInNewThread]);
+  }, [isPromptSendingLocked, onImplementPlanInNewThread]);
   const scheduleComposerCollapseCheck = useCallback(() => {
     if (!isMobileViewport) {
       return;
@@ -2792,6 +2876,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                         projectSelectionRequired
                       }
                       isPreparingWorktree={false}
+                      isSendLocked={isPromptSendingLocked}
                       hasSendableContent={false}
                       preserveComposerFocusOnPointerDown
                       onPreviousPendingQuestion={onPreviousActivePendingUserInputQuestion}
@@ -2882,10 +2967,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   resolvedTheme={resolvedTheme}
                   isLoading={isComposerMenuLoading}
                   triggerKind={composerTriggerKind}
-                  groupSlashCommandSections={
-                    composerTrigger?.kind === "slash-command" &&
-                    composerTrigger.query.trim().length === 0
-                  }
+                  groupSlashCommandSections={composerTrigger?.kind === "slash-command"}
+                  {...(composerTrigger?.kind === "slash-command"
+                    ? {
+                        slashCommandProvider: {
+                          label: selectedProviderEntry?.displayName ?? "Selected provider",
+                          state: selectedProviderSlashCommandState,
+                          isFiltered: composerTrigger.query.trim().length > 0,
+                        },
+                      }
+                    : {})}
                   emptyStateText={composerMenuEmptyState}
                   activeItemId={activeComposerMenuItem?.id ?? null}
                   onHighlightedItemChange={onComposerMenuItemHighlighted}
@@ -3075,6 +3166,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       projectSelectionRequired
                     }
                     isPreparingWorktree={false}
+                    isSendLocked={isPromptSendingLocked}
                     hasSendableContent={false}
                     preserveComposerFocusOnPointerDown
                     onPreviousPendingQuestion={onPreviousActivePendingUserInputQuestion}
@@ -3151,8 +3243,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     interactionMode={interactionMode}
                     runtimeMode={runtimeMode}
                     showInteractionModeToggle={composerProviderControls.showInteractionModeToggle}
+                    sendLocked={isPromptSendingLocked}
                     traitsMenuContent={providerTraitsMenuContent}
                     onToggleInteractionMode={toggleInteractionMode}
+                    onToggleSendLock={() =>
+                      setComposerDraftSendLocked(composerDraftTarget, !isPromptSendingLocked)
+                    }
                     onRuntimeModeChange={handleRuntimeModeChange}
                   />
                 ) : (
@@ -3163,6 +3259,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                         {providerTraitsPicker}
                       </>
                     ) : null}
+                    <ComposerSendLockControl
+                      locked={isPromptSendingLocked}
+                      onToggle={() =>
+                        setComposerDraftSendLocked(composerDraftTarget, !isPromptSendingLocked)
+                      }
+                    />
                     <ComposerFooterModeControls
                       showInteractionModeToggle={composerProviderControls.showInteractionModeToggle}
                       interactionMode={interactionMode}
@@ -3199,6 +3301,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     projectSelectionRequired
                   }
                   isPreparingWorktree={isPreparingWorktree}
+                  isSendLocked={isPromptSendingLocked}
                   hasSendableContent={composerSendState.hasSendableContent}
                   preserveComposerFocusOnPointerDown={isMobileViewport}
                   onPreviousPendingQuestion={onPreviousActivePendingUserInputQuestion}

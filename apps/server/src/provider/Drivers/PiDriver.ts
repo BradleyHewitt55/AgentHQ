@@ -20,6 +20,12 @@ import { unsupportedTextGeneration } from "./unsupportedTextGeneration.ts";
 
 const DRIVER_KIND = ProviderDriverKind.make("pi");
 
+// Pi's SDK accepts `/reload` as a normal prompt command. It has no command
+// catalog API for extensions, so do not advertise extension-defined commands.
+export const PI_SLASH_COMMANDS = [
+  { name: "reload", description: "Reload Pi extensions, skills, prompts, and settings." },
+] as const;
+
 // Shape of the entries `ModelRuntime.getAvailable()` returns that we consume.
 // Declared structurally so the SDK's types stay off the module's import graph.
 interface PiAvailableModel {
@@ -129,9 +135,7 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
             capabilities: createModelCapabilities({ optionDescriptors: [] }),
           })),
         ],
-        slashCommands: [
-          { name: "reload", description: "Reload Pi extensions, skills, prompts, and settings." },
-        ],
+        slashCommands: PI_SLASH_COMMANDS,
         skills: [],
       });
       const currentSnapshot = Effect.gen(function* () {

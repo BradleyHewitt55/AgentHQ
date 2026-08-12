@@ -1,6 +1,7 @@
 import {
   type ProjectEntry,
   type ProviderDriverKind,
+  type ProviderInstanceId,
   type ServerProviderSkill,
   type ServerProviderSlashCommand,
 } from "@t3tools/contracts";
@@ -40,6 +41,7 @@ export type ComposerCommandItem =
       id: string;
       type: "provider-slash-command";
       provider: ProviderDriverKind;
+      providerInstanceId: ProviderInstanceId;
       command: ServerProviderSlashCommand;
       label: string;
       description: string;
@@ -57,6 +59,14 @@ type ComposerCommandGroup = {
   id: string;
   label: string | null;
   items: ComposerCommandItem[];
+};
+
+export type ComposerSlashCommandProviderState = "available" | "loading" | "unavailable";
+
+type ComposerSlashCommandProviderSection = {
+  label: string;
+  state: ComposerSlashCommandProviderState;
+  isFiltered: boolean;
 };
 
 function SkillGlyph(props: { className?: string }) {
@@ -82,6 +92,7 @@ function groupCommandItems(
   items: ComposerCommandItem[],
   triggerKind: ComposerTriggerKind | null,
   groupSlashCommandSections: boolean,
+  providerLabel?: string,
 ): ComposerCommandGroup[] {
   if (triggerKind === "skill") {
     return items.length > 0 ? [{ id: "skills", label: "Skills", items }] : [];
@@ -98,9 +109,33 @@ function groupCommandItems(
     groups.push({ id: "built-in", label: "Built-in", items: builtInItems });
   }
   if (providerItems.length > 0) {
-    groups.push({ id: "provider", label: "Provider", items: providerItems });
+    groups.push({ id: "provider", label: providerLabel ?? "Provider", items: providerItems });
   }
   return groups;
+}
+
+function ComposerProviderSlashCommandEmptyState(props: {
+  section: ComposerSlashCommandProviderSection;
+}) {
+  const text =
+    props.section.state === "unavailable"
+      ? `${props.section.label} is unavailable.`
+      : props.section.state === "loading"
+        ? `Loading ${props.section.label} commands…`
+        : props.section.isFiltered
+          ? `No matching ${props.section.label} commands.`
+          : `${props.section.label} exposes no slash commands.`;
+
+  return (
+    <CommandGroup>
+      <CommandGroupLabel className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-secondary-label">
+        {props.section.label}
+      </CommandGroupLabel>
+      <p role="status" aria-live="polite" className="px-3 pb-2 text-secondary-label text-xs">
+        {text}
+      </p>
+    </CommandGroup>
+  );
 }
 
 export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
@@ -109,6 +144,7 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
   isLoading: boolean;
   triggerKind: ComposerTriggerKind | null;
   groupSlashCommandSections?: boolean;
+  slashCommandProvider?: ComposerSlashCommandProviderSection;
   emptyStateText?: string;
   activeItemId: string | null;
   onHighlightedItemChange: (itemId: string | null) => void;
@@ -117,8 +153,18 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
   const listRef = useRef<HTMLDivElement>(null);
   const groups = useMemo(
     () =>
-      groupCommandItems(props.items, props.triggerKind, props.groupSlashCommandSections ?? true),
-    [props.groupSlashCommandSections, props.items, props.triggerKind],
+      groupCommandItems(
+        props.items,
+        props.triggerKind,
+        props.groupSlashCommandSections ?? true,
+        props.slashCommandProvider?.label,
+      ),
+    [
+      props.groupSlashCommandSections,
+      props.items,
+      props.slashCommandProvider?.label,
+      props.triggerKind,
+    ],
   );
 
   useLayoutEffect(() => {
@@ -167,6 +213,14 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
                 </CommandGroup>
               </div>
             ))}
+            {props.triggerKind === "slash-command" &&
+            props.slashCommandProvider &&
+            !props.items.some((item) => item.type === "provider-slash-command") ? (
+              <>
+                {groups.length > 0 ? <CommandSeparator className="my-0.5" /> : null}
+                <ComposerProviderSlashCommandEmptyState section={props.slashCommandProvider} />
+              </>
+            ) : null}
           </CommandList>
         ) : (
           <div className="px-5 py-3.5">
@@ -212,6 +266,7 @@ const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
   return (
     <CommandItem
       value={props.item.id}
+      aria-label={`${props.item.label}: ${props.item.description}`}
       data-composer-item-id={props.item.id}
       className={cn(
         "cursor-pointer select-none gap-2 hover:bg-transparent hover:text-inherit data-highlighted:bg-transparent data-highlighted:text-inherit",
@@ -252,6 +307,11 @@ const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
         <span className="min-w-0 flex-1 truncate text-secondary-label text-xs">
           {props.item.description}
         </span>
+        {props.item.type === "provider-slash-command" && props.item.command.input?.hint ? (
+          <span className="shrink-0 text-secondary-label text-xs">
+            {props.item.command.input.hint}
+          </span>
+        ) : null}
       </span>
       {skillSourceLabel ? (
         <span className="shrink-0 pl-2 text-secondary-label text-xs">{skillSourceLabel}</span>

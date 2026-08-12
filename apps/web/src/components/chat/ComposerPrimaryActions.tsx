@@ -24,6 +24,7 @@ interface ComposerPrimaryActionsProps {
   isConnecting: boolean;
   isEnvironmentUnavailable: boolean;
   isPreparingWorktree: boolean;
+  isSendLocked: boolean;
   hasSendableContent: boolean;
   preserveComposerFocusOnPointerDown?: boolean;
   onPreviousPendingQuestion: () => void;
@@ -64,6 +65,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   isConnecting,
   isEnvironmentUnavailable,
   isPreparingWorktree,
+  isSendLocked,
   hasSendableContent,
   preserveComposerFocusOnPointerDown = false,
   onPreviousPendingQuestion,
@@ -131,6 +133,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
           )}
           {...pointerFocusProps}
           disabled={
+            isSendLocked ||
             isEnvironmentUnavailable ||
             pendingAction.isResponding ||
             (pendingAction.isLastQuestion ? !pendingAction.isComplete : !pendingAction.canAdvance)
@@ -162,7 +165,9 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
             compact ? "h-9 px-3 sm:h-8" : "h-9 px-4 sm:h-8",
           )}
           {...pointerFocusProps}
-          disabled={isSendBusy || isSendDisabled || isConnecting || isEnvironmentUnavailable}
+          disabled={
+            isSendLocked || isSendBusy || isSendDisabled || isConnecting || isEnvironmentUnavailable
+          }
         >
           {isConnecting || isSendBusy ? "Sending..." : "Refine"}
         </Button>
@@ -176,7 +181,9 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
           size="sm"
           className="h-9 rounded-l-full rounded-r-none bg-message-action px-4 text-message-action-foreground hover:bg-message-action-hover sm:h-8"
           {...pointerFocusProps}
-          disabled={isSendBusy || isSendDisabled || isConnecting || isEnvironmentUnavailable}
+          disabled={
+            isSendLocked || isSendBusy || isSendDisabled || isConnecting || isEnvironmentUnavailable
+          }
         >
           {isConnecting || isSendBusy ? "Sending..." : "Implement"}
         </Button>
@@ -189,7 +196,13 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
                 className="h-9 rounded-l-none rounded-r-full border-l-message-action-foreground/20 bg-message-action px-2 text-message-action-foreground hover:bg-message-action-hover sm:h-8"
                 aria-label="Implementation actions"
                 {...pointerFocusProps}
-                disabled={isSendBusy || isSendDisabled || isConnecting || isEnvironmentUnavailable}
+                disabled={
+                  isSendLocked ||
+                  isSendBusy ||
+                  isSendDisabled ||
+                  isConnecting ||
+                  isEnvironmentUnavailable
+                }
               />
             }
           >
@@ -197,7 +210,13 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
           </MenuTrigger>
           <MenuPopup align="end" side="top">
             <MenuItem
-              disabled={isSendBusy || isSendDisabled || isConnecting || isEnvironmentUnavailable}
+              disabled={
+                isSendLocked ||
+                isSendBusy ||
+                isSendDisabled ||
+                isConnecting ||
+                isEnvironmentUnavailable
+              }
               onClick={() => void onImplementPlanInNewThread()}
             >
               Implement in a new thread
@@ -217,6 +236,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
       )}
       {...pointerFocusProps}
       disabled={
+        isSendLocked ||
         isSendBusy ||
         isSendDisabled ||
         isConnecting ||
@@ -226,15 +246,17 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
       aria-label={
         isEnvironmentUnavailable
           ? "Environment disconnected"
-          : sendDisabledReason
-            ? sendDisabledReason
-            : isConnecting
-              ? "Connecting"
-              : isPreparingWorktree
-                ? "Preparing worktree"
-                : isSendBusy
-                  ? "Sending"
-                  : "Send message"
+          : isSendLocked
+            ? "Prompt sending is locked"
+            : sendDisabledReason
+              ? sendDisabledReason
+              : isConnecting
+                ? "Connecting"
+                : isPreparingWorktree
+                  ? "Preparing worktree"
+                  : isSendBusy
+                    ? "Sending"
+                    : "Send message"
       }
     >
       {isConnecting || isSendBusy ? (

@@ -250,6 +250,8 @@ function flattenOpenCodeModels(input: OpenCodeInventory): ReadonlyArray<ServerPr
   return models.toSorted((left, right) => left.name.localeCompare(right.name));
 }
 
+// OpenCode's SDK inventory contains providers, models, and agents but no
+// prompt-command discovery endpoint, so snapshots intentionally expose none.
 export const makePendingOpenCodeProvider = (
   openCodeSettings: OpenCodeSettings,
 ): Effect.Effect<ServerProviderDraft> =>

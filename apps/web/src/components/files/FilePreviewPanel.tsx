@@ -865,7 +865,7 @@ export default function FilePreviewPanel({
   }, [absolutePath, createAssetUrl, environmentHttpBaseUrl, openPreview, threadRef]);
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
+    <div className="group/file-preview relative flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
       {relativePath ? (
         <div className="surface-subheader gap-2 px-3" data-surface-subheader>
           <ScrollArea
@@ -957,25 +957,27 @@ export default function FilePreviewPanel({
               <TooltipPopup>Open file in preview browser</TooltipPopup>
             </Tooltip>
           ) : null}
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Toggle
-                  className="shrink-0"
-                  pressed={explorerOpen}
-                  onPressedChange={toggleExplorer}
-                  aria-label={explorerOpen ? "Hide file explorer" : "Show file explorer"}
-                  variant="ghost"
-                  size="sm"
-                >
-                  <FolderTree className="size-3.5" />
-                </Toggle>
-              }
-            />
-            <TooltipPopup>
-              {explorerOpen ? "Hide file explorer" : "Show file explorer"}
-            </TooltipPopup>
-          </Tooltip>
+          {/* Keep the explorer toggle out of the way until the Files panel is in use. */}
+          <div className="pointer-events-none flex shrink-0 items-center opacity-0 transition-opacity group-hover/file-preview:pointer-events-auto group-hover/file-preview:opacity-100 group-focus-within/file-preview:pointer-events-auto group-focus-within/file-preview:opacity-100 max-sm:pointer-events-auto max-sm:opacity-100">
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Toggle
+                    pressed={explorerOpen}
+                    onPressedChange={toggleExplorer}
+                    aria-label={explorerOpen ? "Hide file explorer" : "Show file explorer"}
+                    variant="ghost"
+                    size="sm"
+                  >
+                    <FolderTree className="size-3.5" />
+                  </Toggle>
+                }
+              />
+              <TooltipPopup>
+                {explorerOpen ? "Hide file explorer" : "Show file explorer"}
+              </TooltipPopup>
+            </Tooltip>
+          </div>
         </div>
       ) : null}
       {relativePath && file.data?.truncated ? (

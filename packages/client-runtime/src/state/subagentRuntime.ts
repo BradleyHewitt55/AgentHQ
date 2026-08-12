@@ -71,6 +71,10 @@ export interface RuntimeSubagent {
   readonly result: string | null;
   readonly error: string | null;
   readonly outputFile: string | null;
+  /** Files in a currently in-flight, provider-attributed file operation. */
+  readonly activeFiles: ReadonlyArray<string>;
+  /** Files the provider confirmed this agent changed. */
+  readonly changedFiles: ReadonlyArray<string>;
   readonly parentAgentId: string | null;
   readonly agentIndex: number | null;
   readonly phaseIndex: number | null;
@@ -144,6 +148,67 @@ function asString(value: unknown): string | undefined {
 
 function asCount(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function asPaths(value: unknown): ReadonlyArray<string> | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const paths: string[] = [];
+  for (const entry of value) {
+    const path = asString(entry);
+    if (path && !paths.includes(path)) paths.push(path);
+  }
+  return paths;
+}
+
+function mergePaths(
+  current: ReadonlyArray<string>,
+  incoming: ReadonlyArray<string>,
+): ReadonlyArray<string> {
+  return incoming.reduce(
+    (paths, path) => (paths.includes(path) ? paths : [...paths, path]),
+    current,
+  );
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+/**
+ * File paths are telemetry, not a filesystem scan. Only accept explicit paths
+ * from provider-attributed file tools; command strings and summaries never
+ * become file claims.
+ */
+function toolFileActivity(payload: Record<string, unknown>):
+  | {
+      readonly agentId: string;
+      readonly itemId: string | undefined;
+      readonly paths: ReadonlyArray<string>;
+      readonly changed: boolean;
+    }
+  | undefined {
+  const agentId = asString(payload.agentId);
+  if (!agentId) return undefined;
+  const data = asRecord(payload.data);
+  const toolName = asString(data?.toolName) ?? asString(payload.toolName);
+  const operation = toolName?.toLocaleLowerCase();
+  const changed =
+    payload.itemType === "file_change" ||
+    operation === "edit" ||
+    operation === "write" ||
+    operation === "apply_patch";
+  const readsFile = operation === "read" || operation === "read_file";
+  if (!changed && !readsFile) return undefined;
+  const input = asRecord(data?.input) ?? asRecord(data?.args) ?? asRecord(payload.input);
+  const path =
+    asString(input?.file_path) ??
+    asString(input?.filePath) ??
+    asString(input?.path) ??
+    asString(input?.filename);
+  if (!path) return undefined;
+  return { agentId, itemId: asString(payload.itemId), paths: [path], changed };
 }
 
 function asUsage(value: unknown): SubagentUsage | undefined {
@@ -240,6 +305,8 @@ interface MutableAgent {
   result: string | null;
   error: string | null;
   outputFile: string | null;
+  activeFiles: ReadonlyArray<string>;
+  changedFiles: ReadonlyArray<string>;
   parentAgentId: string | null;
   agentIndex: number | null;
   phaseIndex: number | null;
@@ -294,6 +361,8 @@ function getOrCreate(
     result: null,
     error: null,
     outputFile: null,
+    activeFiles: [],
+    changedFiles: [],
     parentAgentId: asString(payload.parentAgentId) ?? null,
     agentIndex: asCount(payload.agentIndex) ?? null,
     phaseIndex: asCount(payload.phaseIndex) ?? null,
@@ -352,6 +421,12 @@ function fillMetadata(agent: MutableAgent, payload: Record<string, unknown>): vo
   }
   const outputFile = asString(payload.outputFile);
   if (outputFile) agent.outputFile = outputFile;
+  // activeFiles is a provider snapshot: an explicit [] clears stale work
+  // after a task settles. changedFiles is historical and only grows.
+  const activeFiles = asPaths(payload.activeFiles);
+  if (activeFiles) agent.activeFiles = activeFiles;
+  const changedFiles = asPaths(payload.changedFiles);
+  if (changedFiles) agent.changedFiles = mergePaths(agent.changedFiles, changedFiles);
   if (Array.isArray(payload.phases)) {
     const phases: SubagentWorkflowPhase[] = [];
     for (const entry of payload.phases) {
@@ -461,6 +536,14 @@ export function foldSubagentActivities(
   options?: { readonly sessionLive?: boolean },
 ): ReadonlyArray<RuntimeSubagent> {
   const agents = new Map<string, MutableAgent>();
+  const activeToolFiles = new Map<string, { agentId: string; paths: ReadonlyArray<string> }>();
+
+  const refreshActiveFiles = (agent: MutableAgent) => {
+    const paths = Array.from(activeToolFiles.values())
+      .filter((entry) => entry.agentId === agent.id)
+      .flatMap((entry) => entry.paths);
+    agent.activeFiles = mergePaths([], paths);
+  };
 
   for (const activity of activities) {
     if (typeof activity.payload !== "object" || activity.payload === null) {
@@ -604,6 +687,41 @@ export function foldSubagentActivities(
           }
         }
         agent.usage = mergeUsageMax(agent.usage, asUsage(payload.typedUsage));
+        agent.updatedAt = at;
+        break;
+      }
+      case "tool.started":
+      case "tool.updated": {
+        const fileActivity = toolFileActivity(payload);
+        if (!fileActivity) break;
+        const agent = agents.get(fileActivity.agentId);
+        if (!agent || !fileActivity.itemId) break;
+        if (payload.status === "completed" || payload.status === "failed") {
+          activeToolFiles.delete(fileActivity.itemId);
+          if (fileActivity.changed && payload.status === "completed") {
+            agent.changedFiles = mergePaths(agent.changedFiles, fileActivity.paths);
+          }
+        } else {
+          activeToolFiles.set(fileActivity.itemId, fileActivity);
+        }
+        refreshActiveFiles(agent);
+        agent.updatedAt = at;
+        break;
+      }
+      case "tool.completed": {
+        const fileActivity = toolFileActivity(payload);
+        if (!fileActivity) break;
+        const active = fileActivity.itemId ? activeToolFiles.get(fileActivity.itemId) : undefined;
+        const agent = agents.get(active?.agentId ?? fileActivity.agentId);
+        if (!agent) break;
+        if (fileActivity.itemId) activeToolFiles.delete(fileActivity.itemId);
+        refreshActiveFiles(agent);
+        // A failed file tool never becomes a changed-file claim. Older rows
+        // without status retain their original conservative behaviour: only
+        // a known successful completion contributes a change.
+        if (fileActivity.changed && payload.status === "completed") {
+          agent.changedFiles = mergePaths(agent.changedFiles, fileActivity.paths);
+        }
         agent.updatedAt = at;
         break;
       }

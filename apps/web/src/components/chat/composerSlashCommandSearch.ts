@@ -73,7 +73,7 @@ export function searchSlashCommandItems(
         tieBreaker:
           item.type === "slash-command"
             ? `0\u0000${item.command}`
-            : `1\u0000${item.command.name}\u0000${item.provider}`,
+            : `1\u0000${item.command.name}\u0000${item.providerInstanceId}`,
       },
       Number.POSITIVE_INFINITY,
     );

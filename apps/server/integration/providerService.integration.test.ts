@@ -28,6 +28,7 @@ import { ServerSettingsService } from "../src/serverSettings.ts";
 import { AnalyticsService } from "../src/telemetry/Services/AnalyticsService.ts";
 import { SqlitePersistenceMemory } from "../src/persistence/Layers/Sqlite.ts";
 import * as ProviderSessionRuntime from "../src/persistence/ProviderSessionRuntime.ts";
+import * as SubscriptionUsage from "../src/persistence/SubscriptionUsage.ts";
 
 import {
   makeTestProviderAdapterHarness,
@@ -93,6 +94,7 @@ const makeIntegrationFixture = (options?: { readonly analytics?: Layer.Layer<Ana
 
     const shared = Layer.mergeAll(
       directoryLayer,
+      SubscriptionUsage.layer,
       Layer.succeed(ProviderAdapterRegistry, registry),
       ServerConfig.layerTest(cwd, cwd).pipe(Layer.provide(NodeServices.layer)),
       ServerSettingsService.layerTest(DEFAULT_SERVER_SETTINGS),

@@ -46,11 +46,12 @@ import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import * as ProviderAdapterRegistry from "../Services/ProviderAdapterRegistry.ts";
 import * as ProviderService from "../Services/ProviderService.ts";
 import * as ProviderSessionDirectory from "../Services/ProviderSessionDirectory.ts";
-import { makeProviderServiceLive } from "./ProviderService.ts";
+import { makeProviderServiceLive as makeProviderServiceLiveBase } from "./ProviderService.ts";
 import * as ProviderEventLoggers from "./ProviderEventLoggers.ts";
 import { ProviderSessionDirectoryLive } from "./ProviderSessionDirectory.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as ProviderSessionRuntime from "../../persistence/ProviderSessionRuntime.ts";
+import * as SubscriptionUsage from "../../persistence/SubscriptionUsage.ts";
 import {
   makeSqlitePersistenceLive,
   SqlitePersistenceMemory,
@@ -64,6 +65,11 @@ const defaultServerSettingsLayer = ServerSettings.ServerSettingsService.layerTes
 const serverConfigTestLayer = ServerConfig.layerTest(process.cwd(), process.cwd()).pipe(
   Layer.provide(NodeServices.layer),
 );
+const subscriptionUsageRepositoryTestLayer = SubscriptionUsage.layer.pipe(
+  Layer.provide(SqlitePersistenceMemory),
+);
+const makeProviderServiceLive = (options?: Parameters<typeof makeProviderServiceLiveBase>[0]) =>
+  makeProviderServiceLiveBase(options).pipe(Layer.provide(subscriptionUsageRepositoryTestLayer));
 
 const asRequestId = (value: string): ApprovalRequestId => ApprovalRequestId.make(value);
 const asEventId = (value: string): EventId => EventId.make(value);
@@ -1552,6 +1558,128 @@ routing.layer("ProviderServiceLive routing", (it) => {
       }).pipe(Effect.provide(NodeServices.layer)),
   );
 });
+
+it.effect("returns and hydrates last-known subscription rate-limit snapshots", () =>
+  Effect.gen(function* () {
+    const tempDir = NodeFS.mkdtempSync(
+      NodePath.join(NodeOS.tmpdir(), "t3-provider-subscription-usage-"),
+    );
+    const dbPath = NodePath.join(tempDir, "orchestration.sqlite");
+    const persistenceLayer = makeSqlitePersistenceLive(dbPath);
+    const subscriptionUsageRepositoryLayer = SubscriptionUsage.layer.pipe(
+      Layer.provide(persistenceLayer),
+    );
+    const runtimeRepositoryLayer = ProviderSessionRuntime.layer.pipe(
+      Layer.provide(persistenceLayer),
+    );
+
+    const makeRestartableProviderLayer = (
+      codex: ReturnType<typeof makeFakeCodexAdapter>,
+      claude: ReturnType<typeof makeFakeCodexAdapter>,
+    ) => {
+      const registry = makeAdapterRegistryMock({
+        [CODEX_DRIVER]: codex.adapter,
+        [CLAUDE_AGENT_DRIVER]: claude.adapter,
+      });
+      const directoryLayer = ProviderSessionDirectoryLive.pipe(
+        Layer.provide(runtimeRepositoryLayer),
+      );
+      return makeProviderServiceLiveBase().pipe(
+        Layer.provide(Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistry, registry)),
+        Layer.provide(directoryLayer),
+        Layer.provide(subscriptionUsageRepositoryLayer),
+        Layer.provide(defaultServerSettingsLayer),
+        Layer.provide(serverConfigTestLayer),
+        Layer.provide(AnalyticsService.layerTest),
+        Layer.provide(
+          Layer.succeed(
+            ProviderEventLoggers.ProviderEventLoggers,
+            ProviderEventLoggers.NoOpProviderEventLoggers,
+          ),
+        ),
+      );
+    };
+
+    const firstCodex = makeFakeCodexAdapter();
+    const firstClaude = makeFakeCodexAdapter(CLAUDE_AGENT_DRIVER);
+    const firstProviderLayer = makeRestartableProviderLayer(firstCodex, firstClaude);
+
+    const emitted = yield* Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      yield* advanceTestClock(50);
+      firstCodex.emit({
+        type: "account.rate-limits.updated",
+        eventId: asEventId("evt-codex-subscription-usage"),
+        provider: CODEX_DRIVER,
+        createdAt: "2026-01-02T03:04:05.000Z",
+        threadId: asThreadId("thread-codex-subscription-usage"),
+        payload: {
+          rateLimits: {
+            provider: "codex",
+            fiveHour: { usedPercent: 24, resetsAt: "2026-01-02T08:00:00.000Z" },
+            weekly: [{ usedPercent: 61, resetsAt: null }],
+          },
+        },
+      });
+      firstClaude.emit({
+        type: "account.rate-limits.updated",
+        eventId: asEventId("evt-claude-subscription-usage"),
+        provider: CLAUDE_AGENT_DRIVER,
+        createdAt: "2026-01-02T03:05:06.000Z",
+        threadId: asThreadId("thread-claude-subscription-usage"),
+        payload: {
+          rateLimits: {
+            provider: "claude",
+            weekly: [
+              {
+                usedPercent: 39,
+                resetsAt: "2026-01-08T03:05:06.000Z",
+                label: "Opus",
+              },
+            ],
+          },
+        },
+      });
+      yield* advanceTestClock(50);
+      return yield* provider.getSubscriptionUsage;
+    }).pipe(Effect.provide(firstProviderLayer));
+
+    assert.deepEqual(emitted.providers, [
+      {
+        provider: "codex",
+        status: "available",
+        fiveHour: { usedPercent: 24, resetsAt: "2026-01-02T08:00:00.000Z" },
+        weekly: [{ usedPercent: 61, resetsAt: null }],
+        updatedAt: "2026-01-02T03:04:05.000Z",
+      },
+      {
+        provider: "claude",
+        status: "available",
+        fiveHour: null,
+        weekly: [
+          {
+            usedPercent: 39,
+            resetsAt: "2026-01-08T03:05:06.000Z",
+            label: "Opus",
+          },
+        ],
+        updatedAt: "2026-01-02T03:05:06.000Z",
+      },
+    ]);
+
+    const secondProviderLayer = makeRestartableProviderLayer(
+      makeFakeCodexAdapter(),
+      makeFakeCodexAdapter(CLAUDE_AGENT_DRIVER),
+    );
+    const hydrated = yield* Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      return yield* provider.getSubscriptionUsage;
+    }).pipe(Effect.provide(secondProviderLayer));
+
+    assert.deepEqual(hydrated.providers, emitted.providers);
+    NodeFS.rmSync(tempDir, { recursive: true, force: true });
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
 
 const fanout = makeProviderServiceLayer();
 fanout.layer("ProviderServiceLive fanout", (it) => {

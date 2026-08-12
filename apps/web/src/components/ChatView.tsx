@@ -4634,6 +4634,9 @@ function ChatViewContent(props: ChatViewProps) {
     },
   ) => {
     e?.preventDefault();
+    if (useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.sendLocked) {
+      return;
+    }
     const notifyDirectAnnotationAttached = () => {
       if (!directAnnotation) return;
       toastManager.add(

@@ -161,6 +161,7 @@ function makeHarness(config?: {
   readonly baseDir?: string;
   readonly claudeConfig?: Partial<ClaudeSettings>;
   readonly instanceId?: ProviderInstanceId;
+  readonly onCommandsChanged?: Effect.Effect<void>;
 }) {
   const query = new FakeClaudeQuery();
   let createInput:
@@ -186,6 +187,7 @@ function makeHarness(config?: {
           nativeEventLogPath: config.nativeEventLogPath,
         }
       : {}),
+    ...(config?.onCommandsChanged ? { onCommandsChanged: config.onCommandsChanged } : {}),
   };
 
   return {
@@ -2136,6 +2138,37 @@ describe("ClaudeAdapterLive", () => {
         );
         assert.equal(progressEvent.payload.description, "Running background teammate");
       }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("refreshes provider command discovery when Claude reports commands changed", () => {
+    let refreshes = 0;
+    const harness = makeHarness({
+      onCommandsChanged: Effect.sync(() => {
+        refreshes += 1;
+      }),
+    });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      harness.query.emit({
+        type: "system",
+        subtype: "commands_changed",
+        session_id: "session",
+        uuid: "commands-changed",
+      } as unknown as SDKMessage);
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+
+      assert.strictEqual(refreshes, 1);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

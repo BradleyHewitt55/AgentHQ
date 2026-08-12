@@ -31,6 +31,7 @@ function renderPendingActions(isRunning: boolean) {
       isConnecting: false,
       isEnvironmentUnavailable: false,
       isPreparingWorktree: false,
+      isSendLocked: false,
       hasSendableContent: false,
       onPreviousPendingQuestion: () => {},
       onInterrupt: () => {},
@@ -52,6 +53,7 @@ function renderStandaloneStop() {
       isConnecting: false,
       isEnvironmentUnavailable: false,
       isPreparingWorktree: false,
+      isSendLocked: false,
       hasSendableContent: false,
       onPreviousPendingQuestion: () => {},
       onInterrupt: () => {},
@@ -151,6 +153,31 @@ describe("formatPendingPrimaryActionLabel", () => {
 });
 
 describe("ComposerPrimaryActions", () => {
+  it("disables prompt submission while sending is locked", () => {
+    const markup = renderToStaticMarkup(
+      createElement(ComposerPrimaryActions, {
+        compact: false,
+        pendingAction: null,
+        isRunning: false,
+        showPlanFollowUpPrompt: false,
+        promptHasText: true,
+        isSendBusy: false,
+        sendDisabledReason: null,
+        isConnecting: false,
+        isEnvironmentUnavailable: false,
+        isPreparingWorktree: false,
+        isSendLocked: true,
+        hasSendableContent: true,
+        onPreviousPendingQuestion: () => {},
+        onInterrupt: () => {},
+        onImplementPlanInNewThread: () => {},
+      }),
+    );
+
+    expect(markup).toContain('aria-label="Prompt sending is locked"');
+    expect(markup).toContain('disabled=""');
+  });
+
   it("offers Stop generation while a running turn is waiting for user input", () => {
     expect(renderPendingActions(true)).toContain('aria-label="Stop generation"');
   });

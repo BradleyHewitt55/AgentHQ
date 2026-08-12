@@ -13,9 +13,10 @@ export interface ComposerTrigger {
 
 export function shouldSubmitComposerOnEnter(input: {
   isMobileViewport: boolean;
+  isSendLocked: boolean;
   shiftKey: boolean;
 }): boolean {
-  return !input.isMobileViewport && !input.shiftKey;
+  return !input.isMobileViewport && !input.isSendLocked && !input.shiftKey;
 }
 
 const isInlineTokenSegment = (
@@ -272,6 +273,17 @@ export function parseStandaloneComposerSlashCommand(
   const command = match[1]?.toLowerCase();
   if (command === "plan") return "plan";
   return "default";
+}
+
+export function extendComposerTriggerReplacementRange(
+  text: string,
+  rangeEnd: number,
+  replacement: string,
+): number {
+  if (!replacement.endsWith(" ")) {
+    return rangeEnd;
+  }
+  return text[rangeEnd] === " " ? rangeEnd + 1 : rangeEnd;
 }
 
 export function replaceTextRange(

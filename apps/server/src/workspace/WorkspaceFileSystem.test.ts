@@ -439,6 +439,97 @@ it.layer(TestLayer, { excludeTestServices: true })("WorkspaceFileSystemLive", (i
     );
   });
 
+  describe("pasteEntries", () => {
+    it.effect("copies files and complete directory hierarchies into a destination folder", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const cwd = yield* makeTempDir;
+        yield* writeTextFile(cwd, "source/nested/keep.ts", "export const keep = true;\n");
+        yield* writeTextFile(cwd, "notes.md", "# Notes\n");
+        yield* fileSystem.makeDirectory(path.join(cwd, "target"));
+
+        const result = yield* workspaceFileSystem.pasteEntries({
+          cwd,
+          sourcePaths: ["source", "notes.md"],
+          targetDirectory: "target",
+          operation: "copy",
+        });
+
+        expect(result).toEqual({ copiedPaths: ["target/source", "target/notes.md"] });
+        expect(
+          yield* fileSystem.readFileString(path.join(cwd, "target/source/nested/keep.ts")),
+        ).toBe("export const keep = true;\n");
+        expect(yield* fileSystem.readFileString(path.join(cwd, "target/notes.md"))).toBe(
+          "# Notes\n",
+        );
+        expect(yield* fileSystem.readFileString(path.join(cwd, "source/nested/keep.ts"))).toBe(
+          "export const keep = true;\n",
+        );
+      }),
+    );
+
+    it.effect("moves cut entries and refreshes their destination layout", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const cwd = yield* makeTempDir;
+        yield* writeTextFile(cwd, "drafts/todo.md", "- ship\n");
+        yield* fileSystem.makeDirectory(path.join(cwd, "archive"));
+
+        yield* workspaceFileSystem.pasteEntries({
+          cwd,
+          sourcePaths: ["drafts"],
+          targetDirectory: "archive",
+          operation: "cut",
+        });
+
+        expect(yield* fileSystem.readFileString(path.join(cwd, "archive/drafts/todo.md"))).toBe(
+          "- ship\n",
+        );
+        expect(
+          yield* fileSystem.stat(path.join(cwd, "drafts")).pipe(Effect.orElseSucceed(() => null)),
+        ).toBeNull();
+      }),
+    );
+
+    it.effect(
+      "blocks every paste when any destination conflicts instead of partially overwriting",
+      () =>
+        Effect.gen(function* () {
+          const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const cwd = yield* makeTempDir;
+          yield* writeTextFile(cwd, "first.txt", "first\n");
+          yield* writeTextFile(cwd, "second.txt", "second\n");
+          yield* writeTextFile(cwd, "target/first.txt", "existing\n");
+
+          const error = yield* workspaceFileSystem
+            .pasteEntries({
+              cwd,
+              sourcePaths: ["first.txt", "second.txt"],
+              targetDirectory: "target",
+              operation: "copy",
+            })
+            .pipe(Effect.flip);
+
+          expect(error).toBeInstanceOf(WorkspaceFileSystem.WorkspacePasteTargetConflictError);
+          expect(error).toMatchObject({ targetPath: "target/first.txt" });
+          expect(
+            yield* fileSystem
+              .stat(path.join(cwd, "target/second.txt"))
+              .pipe(Effect.orElseSucceed(() => null)),
+          ).toBeNull();
+          expect(yield* fileSystem.readFileString(path.join(cwd, "target/first.txt"))).toBe(
+            "existing\n",
+          );
+        }),
+    );
+  });
+
   describe("deleteEntry", () => {
     it.effect("deletes a file", () =>
       Effect.gen(function* () {
