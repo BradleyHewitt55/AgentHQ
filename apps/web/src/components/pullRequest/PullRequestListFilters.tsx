@@ -24,6 +24,8 @@ import type { ElementType } from "react";
 import { cn } from "~/lib/utils";
 import { getSourceControlPresentationForKind } from "~/sourceControlPresentation";
 import { ProjectFavicon } from "../ProjectFavicon";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "../ui/input-group";
+import { Button } from "../ui/button";
 
 import {
   Menu,
@@ -34,6 +36,7 @@ import {
   MenuSeparator,
   MenuTrigger,
 } from "../ui/menu";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 export interface PullRequestFilterOption<Value extends string> {
   readonly value: Value;
@@ -79,29 +82,18 @@ export function PullRequestSearchInput({
   onChange: (value: string) => void;
 }) {
   return (
-    <div className="relative min-w-0 flex-1">
-      {busy ? (
-        <LoaderIcon
-          aria-hidden
-          className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 animate-spin text-muted-foreground"
-        />
-      ) : (
-        <SearchIcon
-          aria-hidden
-          className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
-        />
-      )}
-      <input
-        type="text"
+    <InputGroup className="min-w-0 flex-1 **:[input]:h-9 sm:**:[input]:h-8">
+      <InputGroupAddon>
+        {busy ? <LoaderIcon aria-hidden className="animate-spin" /> : <SearchIcon aria-hidden />}
+      </InputGroupAddon>
+      <InputGroupInput
+        type="search"
         value={value}
         onChange={(event) => onChange(event.currentTarget.value)}
         placeholder="Search pull requests, or label:bug"
         aria-label="Search pull requests"
-        // Tracks the shared input's height at both widths, so it stays level with the icon
-        // button beside it rather than towering over it on wide screens.
-        className="h-9 w-full rounded-lg border border-input bg-background pr-3 pl-9 text-sm outline-none placeholder:text-muted-foreground/72 focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/24 sm:h-8"
       />
-    </div>
+    </InputGroup>
   );
 }
 
@@ -166,21 +158,32 @@ function PullRequestFilterRadioGroup<Value extends string>({
       }}
     >
       <MenuGroupLabel>{label}</MenuGroupLabel>
-      {options.map((option) => (
-        <MenuRadioItem
-          key={option.value}
-          value={option.value}
-          // A host the server has already said it cannot read is not a choice here: offering
-          // it would answer the press by replacing a working list with that failure.
-          disabled={option.unavailable !== undefined}
-          title={option.unavailable}
-        >
-          <span className="flex min-w-0 items-center gap-2">
-            <option.Icon aria-hidden className="size-3.5" />
-            {option.label}
-          </span>
-        </MenuRadioItem>
-      ))}
+      {options.map((option) => {
+        // A host the server has already said it cannot read is not a choice here: offering
+        // it would answer the press by replacing a working list with that failure.
+        const item = (
+          <MenuRadioItem
+            key={option.value}
+            value={option.value}
+            className={option.unavailable ? "data-disabled:pointer-events-auto" : undefined}
+            disabled={option.unavailable !== undefined}
+          >
+            <span className="flex min-w-0 items-center gap-2">
+              <option.Icon aria-hidden className="size-3.5" />
+              {option.label}
+            </span>
+          </MenuRadioItem>
+        );
+        if (!option.unavailable) return item;
+        return (
+          <Tooltip key={option.value}>
+            <TooltipTrigger render={item} />
+            <TooltipPopup side="top" className="max-w-80">
+              {option.unavailable}
+            </TooltipPopup>
+          </Tooltip>
+        );
+      })}
     </MenuRadioGroup>
   );
 }
@@ -271,12 +274,14 @@ export function PullRequestFiltersMenu({
   return (
     <Menu>
       <MenuTrigger
-        className={cn(
-          // The icon-button size that pairs with a full-height input, so the two read as one strip.
-          "relative inline-flex size-9 shrink-0 items-center justify-center rounded-lg border border-input text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground sm:size-8",
-          filtered && "text-foreground",
-        )}
-        aria-label="Filter pull requests"
+        render={
+          <Button
+            className={cn("relative", filtered && "[--control-icon-color:currentColor]")}
+            size="icon"
+            variant="outline"
+            aria-label="Filter pull requests"
+          />
+        }
       >
         <ListFilterIcon className="size-4" />
         {filtered ? (
@@ -385,12 +390,12 @@ export function PullRequestFiltersMenu({
             )
             .map((project) => {
               const reason = unavailable.get(pullRequestProjectKey(project));
-              return (
+              const item = (
                 <MenuRadioItem
                   key={pullRequestProjectKey(project)}
                   value={pullRequestProjectKey(project)}
+                  className={reason !== undefined ? "data-disabled:pointer-events-auto" : undefined}
                   disabled={reason !== undefined}
-                  title={reason}
                 >
                   <span className="flex min-w-0 flex-1 items-center gap-2">
                     <ProjectFavicon
@@ -407,6 +412,15 @@ export function PullRequestFiltersMenu({
                     )}
                   </span>
                 </MenuRadioItem>
+              );
+              if (reason === undefined) return item;
+              return (
+                <Tooltip key={pullRequestProjectKey(project)}>
+                  <TooltipTrigger render={item} />
+                  <TooltipPopup side="top" className="max-w-80">
+                    {reason}
+                  </TooltipPopup>
+                </Tooltip>
               );
             })}
         </MenuRadioGroup>
