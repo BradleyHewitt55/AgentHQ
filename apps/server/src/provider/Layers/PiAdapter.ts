@@ -48,6 +48,15 @@ const PROVIDER = ProviderDriverKind.make("pi");
 
 type PiModelRuntime = AgentSession["modelRuntime"];
 
+/** Stable per-subagent identity, remembered across snapshots of varying richness. */
+type PiSubagentIdentity = {
+  readonly title: string;
+  readonly harness?: string;
+  readonly model?: string;
+  /** Last reported lifecycle state; wait heartbeats must not revive a settled run. */
+  readonly status: "running" | "completed" | "failed";
+};
+
 type PiContext = {
   providerSession: ProviderSession;
   agent: AgentSession;
@@ -56,7 +65,7 @@ type PiContext = {
   assistantItemId: RuntimeItemId | undefined;
   reasoningItemId: RuntimeItemId | undefined;
   toolItems: Map<string, RuntimeItemId>;
-  piSubagentIds: Set<string>;
+  piSubagentIdentities: Map<string, PiSubagentIdentity>;
   turns: Array<{ id: TurnId; items: unknown[] }>;
   abortInFlight: boolean;
   turnError: string | undefined;
@@ -124,6 +133,28 @@ const piSubagentResultsFromResult = (result: unknown) => {
     const parsed = piSubagentDetails(entry);
     return parsed ? [parsed] : [];
   });
+};
+
+// Extension snapshots vary in richness (`subagent_check` carries only
+// id/status). Richer fields win per-field; a snapshot without a real title
+// reports the raw id (piSubagentDetails falls back), and that placeholder
+// must never clobber a remembered display title. Mirrors ClaudeAdapter's
+// taskLinkageFor so every task.* payload stays self-describing.
+const mergePiSubagentIdentity = (
+  known: PiSubagentIdentity | undefined,
+  details: NonNullable<ReturnType<typeof piSubagentDetails>>,
+): PiSubagentIdentity => {
+  const harness = details.harness ?? known?.harness;
+  const model = details.model ?? known?.model;
+  return {
+    title: details.title !== details.id ? details.title : (known?.title ?? details.title),
+    ...(harness !== undefined ? { harness } : {}),
+    ...(model !== undefined ? { model } : {}),
+    // Deliberately not sticky: the extension can restart a subagent under the
+    // same id, so a fresh "running" snapshot must be able to follow a terminal
+    // one.
+    status: details.status ?? known?.status ?? "running",
+  };
 };
 
 const piSubagentResultText = (value: unknown) => {
@@ -273,19 +304,26 @@ export const makePiAdapter = (
       details: NonNullable<ReturnType<typeof piSubagentDetails>>,
       summary?: string,
     ) => {
+      // task.started is deduped by subagent id; every payload carries the
+      // merged identity so sparse snapshots stay self-describing.
+      const isFirstSighting = !context.piSubagentIdentities.has(details.id);
+      const identity = mergePiSubagentIdentity(
+        context.piSubagentIdentities.get(details.id),
+        details,
+      );
+      context.piSubagentIdentities.set(details.id, identity);
       const taskId = RuntimeTaskId.make(details.id);
-      if (!context.piSubagentIds.has(details.id)) {
-        context.piSubagentIds.add(details.id);
+      if (isFirstSighting) {
         emit(context, {
           type: "task.started",
           turnId: context.activeTurnId,
           payload: {
             taskId,
-            description: details.title,
+            description: identity.title,
             taskType: "subagent",
-            title: details.title,
-            ...(details.harness ? { role: `${details.harness} subagent` } : {}),
-            ...(details.model ? { model: details.model } : {}),
+            title: identity.title,
+            ...(identity.harness ? { role: `${identity.harness} subagent` } : {}),
+            ...(identity.model ? { model: identity.model } : {}),
             activeFiles: details.activeFiles,
             ...(details.changedFiles.length > 0 ? { changedFiles: details.changedFiles } : {}),
           },
@@ -301,9 +339,9 @@ export const makePiAdapter = (
             status: details.status,
             ...(summary ? { summary } : {}),
             taskType: "subagent",
-            title: details.title,
-            ...(details.harness ? { role: `${details.harness} subagent` } : {}),
-            ...(details.model ? { model: details.model } : {}),
+            title: identity.title,
+            ...(identity.harness ? { role: `${identity.harness} subagent` } : {}),
+            ...(identity.model ? { model: identity.model } : {}),
             activeFiles: [],
             ...(details.changedFiles.length > 0 ? { changedFiles: details.changedFiles } : {}),
           },
@@ -316,13 +354,13 @@ export const makePiAdapter = (
         turnId: context.activeTurnId,
         payload: {
           taskId,
-          description: details.title,
+          description: identity.title,
           status: "running",
           summary: summary ?? "Running in background",
           taskType: "subagent",
-          title: details.title,
-          ...(details.harness ? { role: `${details.harness} subagent` } : {}),
-          ...(details.model ? { model: details.model } : {}),
+          title: identity.title,
+          ...(identity.harness ? { role: `${identity.harness} subagent` } : {}),
+          ...(identity.model ? { model: identity.model } : {}),
           activeFiles: details.activeFiles,
           ...(details.changedFiles.length > 0 ? { changedFiles: details.changedFiles } : {}),
         },
@@ -434,6 +472,41 @@ export const makePiAdapter = (
           },
         });
         context.toolItems.delete(event.toolCallId);
+        return;
+      }
+      if (event.type === "tool_execution_update") {
+        // The subagent extension streams wait heartbeats as partial tool
+        // results ("Waiting for <ids>..."); every other tool's updates carry
+        // nothing T3 renders. Unknown ids stay invisible: a heartbeat must
+        // not create ghost rows.
+        if (event.toolName === "subagent_wait") {
+          const pending = asRecord(asRecord(event.partialResult)?.details)?.pending;
+          if (Array.isArray(pending)) {
+            for (const entry of pending) {
+              const id = asNonEmptyString(entry);
+              const identity = id ? context.piSubagentIdentities.get(id) : undefined;
+              if (!id || !identity) continue;
+              // A heartbeat can lag a settled result (wait snapshots are
+              // assembled per pending id); it must not reopen a finished run.
+              if (identity.status !== "running") continue;
+              emit(context, {
+                type: "task.progress",
+                turnId: context.activeTurnId,
+                payload: {
+                  taskId: RuntimeTaskId.make(id),
+                  description: identity.title,
+                  status: "running",
+                  summary: "Waiting for result",
+                  taskType: "subagent",
+                  title: identity.title,
+                  ...(identity.harness ? { role: `${identity.harness} subagent` } : {}),
+                  ...(identity.model ? { model: identity.model } : {}),
+                },
+                raw,
+              });
+            }
+          }
+        }
         return;
       }
       if (event.type === "message_end") {
@@ -643,7 +716,7 @@ export const makePiAdapter = (
         assistantItemId: undefined,
         reasoningItemId: undefined,
         toolItems: new Map(),
-        piSubagentIds: new Set(),
+        piSubagentIdentities: new Map(),
         turns: [],
         abortInFlight: false,
         turnError: undefined,

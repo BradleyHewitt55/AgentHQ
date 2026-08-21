@@ -39,6 +39,7 @@ import { buildCodexInitializeParams } from "./CodexProvider.ts";
 import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
 import { buildCodexDeveloperInstructions } from "../CodexDeveloperInstructions.ts";
+import { SUBSCRIPTION_USAGE_REFRESH_INTERVAL_MS } from "../SubscriptionRateLimits.ts";
 const decodeV2TurnStartResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnStartResponse);
 
 const PROVIDER = ProviderDriverKind.make("codex");
@@ -106,6 +107,8 @@ export interface CodexSessionRuntimeOptions {
   readonly serviceTier?: CodexServiceTier | undefined;
   readonly resumeCursor?: CodexResumeCursor;
   readonly appServerArgs?: ReadonlyArray<string>;
+  /** Test-only override of the idle rate-limits refresh cadence. */
+  readonly rateLimitsRefreshIntervalMs?: number;
 }
 
 export interface CodexSessionRuntimeSendTurnInput {
@@ -837,6 +840,17 @@ function parseThreadSnapshot(
     })),
   };
 }
+
+/**
+ * Repeats `refresh` on a fixed cadence, first tick a full interval away —
+ * callers seed immediately at startup. Exported so the cadence itself gets
+ * TestClock coverage; the runtime forks it into its scope so close()
+ * interrupts it.
+ */
+export const codexRateLimitsRefreshLoop = (
+  intervalMs: number,
+  refresh: Effect.Effect<void>,
+): Effect.Effect<never> => Effect.sleep(intervalMs).pipe(Effect.andThen(refresh), Effect.forever);
 
 export const makeCodexSessionRuntime = (
   options: CodexSessionRuntimeOptions,
@@ -1704,6 +1718,17 @@ export const makeCodexSessionRuntime = (
       ),
     );
 
+    /**
+     * The startup seed above covers "now"; `account/rateLimits/updated` only
+     * arrives mid-turn, so an idle session's windows would go stale. Re-seed
+     * on a fixed cadence, first tick a full interval away. Best-effort like
+     * the seed itself.
+     */
+    const refreshRateLimitsLoop = codexRateLimitsRefreshLoop(
+      options.rateLimitsRefreshIntervalMs ?? SUBSCRIPTION_USAGE_REFRESH_INTERVAL_MS,
+      seedRateLimits,
+    );
+
     const start = Effect.fn("CodexSessionRuntime.start")(function* () {
       yield* emitSessionEvent("session/connecting", "Starting Codex App Server session.");
       yield* client.request("initialize", buildCodexInitializeParams());
@@ -1733,6 +1758,8 @@ export const makeCodexSessionRuntime = (
       yield* Ref.set(sessionRef, session);
       yield* emitSessionEvent("session/ready", "Codex App Server session ready.");
       yield* seedRateLimits;
+      // Scoped to the runtime so close() interrupts the refresh loop.
+      yield* refreshRateLimitsLoop.pipe(Effect.forkIn(runtimeScope));
       return session;
     });
 

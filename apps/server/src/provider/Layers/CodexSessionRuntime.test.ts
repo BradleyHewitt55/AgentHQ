@@ -2,7 +2,9 @@ import * as NodeAssert from "node:assert/strict";
 
 import { it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
+import * as TestClock from "effect/testing/TestClock";
 import { describe } from "vite-plus/test";
 import { DEFAULT_MODEL, ThreadId } from "@t3tools/contracts";
 import * as CodexErrors from "effect-codex-app-server/errors";
@@ -16,6 +18,7 @@ import {
 import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
 import {
   buildTurnStartParams,
+  codexRateLimitsRefreshLoop,
   hasConfiguredMcpServer,
   isRecoverableThreadResumeError,
   openCodexThread,
@@ -390,6 +393,36 @@ describe("isRecoverableThreadResumeError", () => {
       false,
     );
   });
+});
+
+describe("codexRateLimitsRefreshLoop", () => {
+  it.effect("first tick waits a full interval, then repeats every interval", () =>
+    Effect.gen(function* () {
+      let runs = 0;
+      const fiber = yield* Effect.forkChild(
+        codexRateLimitsRefreshLoop(
+          1_000,
+          Effect.sync(() => {
+            runs += 1;
+          }),
+        ),
+      );
+
+      yield* TestClock.adjust("999 millis").pipe(Effect.andThen(Effect.yieldNow));
+      NodeAssert.equal(runs, 0);
+
+      yield* TestClock.adjust("1 millis").pipe(Effect.andThen(Effect.yieldNow));
+      NodeAssert.equal(runs, 1);
+
+      yield* TestClock.adjust("1000 millis").pipe(Effect.andThen(Effect.yieldNow));
+      NodeAssert.equal(runs, 2);
+
+      yield* TestClock.adjust("1000 millis").pipe(Effect.andThen(Effect.yieldNow));
+      NodeAssert.equal(runs, 3);
+
+      yield* Fiber.interrupt(fiber);
+    }),
+  );
 });
 
 describe("openCodexThread", () => {

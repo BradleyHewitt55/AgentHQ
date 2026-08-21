@@ -294,4 +294,51 @@ describe("CodexSessionRuntime collab integration", () => {
       yield* runtime.close;
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
+
+  // it.live like the other real-runtime tests: TestClock freezes the wire
+  // transport's timers, so the refresh cadence is shortened via the
+  // test-only interval override instead.
+  it.live("re-seeds account rate limits on an interval while the session idles", () =>
+    Effect.gen(function* () {
+      // @effect-diagnostics-next-line preferSchemaOverJson:off
+      NodeFS.writeFileSync(
+        scriptPath,
+        JSON.stringify({ rootThreadId: ROOT, notifications: [] }),
+        "utf8",
+      );
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(scriptPath, { force: true })),
+      );
+
+      const runtime = yield* makeCodexSessionRuntime({
+        threadId: ThreadId.make("thread-codex-rate-limit-refresh"),
+        binaryPath: peerPath,
+        cwd: "/tmp",
+        runtimeMode: "full-access",
+        environment: { ...process.env, T3_CODEX_COLLAB_SCRIPT: scriptPath },
+        rateLimitsRefreshIntervalMs: 100,
+      });
+
+      const updatesFiber = yield* runtime.events.pipe(
+        Stream.filter((event) => event.method === "account/rateLimits/updated"),
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkScoped,
+      );
+
+      yield* runtime.start();
+
+      // #1 is the startup seed; #2 can only be the interval loop — no turn
+      // was ever started, so no mid-turn notification exists.
+      const updates = Array.from(yield* Fiber.join(updatesFiber));
+      const usedPercent = updates.map(
+        (event) =>
+          (event.payload as { rateLimits?: { primary?: { usedPercent?: number } } }).rateLimits
+            ?.primary?.usedPercent,
+      );
+      assert.deepEqual(usedPercent, [5, 10]);
+
+      yield* runtime.close;
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
 });

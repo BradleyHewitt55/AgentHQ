@@ -96,7 +96,10 @@ import {
 } from "../Errors.ts";
 import { type ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
-import { normalizeClaudeUsageSnapshot } from "../SubscriptionRateLimits.ts";
+import {
+  SUBSCRIPTION_USAGE_REFRESH_INTERVAL_MS,
+  normalizeClaudeUsageSnapshot,
+} from "../SubscriptionRateLimits.ts";
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.fromJsonString(Schema.Unknown));
 const decodeUnknownJsonStringExit = Schema.decodeUnknownExit(Schema.fromJsonString(Schema.Unknown));
 
@@ -222,6 +225,8 @@ interface ClaudeSessionContext {
   readonly promptQueue: Queue.Queue<PromptQueueItem>;
   readonly query: ClaudeQueryRuntime;
   streamFiber: Fiber.Fiber<void, Error> | undefined;
+  /** Recurring idle subscription-usage refresh; interrupted in stopSessionInternal. */
+  subscriptionUsageRefreshFiber: Fiber.Fiber<void, never> | undefined;
   readonly startedAt: string;
   readonly basePermissionMode: PermissionMode | undefined;
   currentApiModelId: string | undefined;
@@ -2147,6 +2152,35 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
   const forkSubscriptionUsage = (context: ClaudeSessionContext) =>
     Effect.forkDetach(emitSubscriptionUsage(context));
 
+  /**
+   * Keeps the account windows fresh while a session idles between turns —
+   * turn boundaries and rate_limit_event only cover active use. The first
+   * tick is a full interval away: startSession seeds immediately and a
+   * finished turn refreshes on completion. Best-effort like every other
+   * usage path: a failed poll logs and retries on the next tick, never
+   * failing the session.
+   */
+  const runSubscriptionUsageRefreshLoop = Effect.fn("runSubscriptionUsageRefreshLoop")(function* (
+    context: ClaudeSessionContext,
+  ) {
+    while (!context.stopped) {
+      yield* Effect.sleep(SUBSCRIPTION_USAGE_REFRESH_INTERVAL_MS);
+      if (context.stopped) return;
+      yield* emitSubscriptionUsage(context).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("claude.subscription.usage-refresh-failed", {
+            threadId: context.session.threadId,
+            cause,
+          }),
+        ),
+      );
+    }
+  });
+
+  /** Detached so the interval fiber never delays startSession. */
+  const forkSubscriptionUsageRefreshLoop = (context: ClaudeSessionContext) =>
+    Effect.forkDetach(runSubscriptionUsageRefreshLoop(context));
+
   const emitProposedPlanCompleted = Effect.fn("emitProposedPlanCompleted")(function* (
     context: ClaudeSessionContext,
     input: {
@@ -3697,6 +3731,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       yield* Fiber.interrupt(streamFiber);
     }
 
+    const subscriptionUsageRefreshFiber = context.subscriptionUsageRefreshFiber;
+    context.subscriptionUsageRefreshFiber = undefined;
+    if (subscriptionUsageRefreshFiber && subscriptionUsageRefreshFiber.pollUnsafe() === undefined) {
+      yield* Fiber.interrupt(subscriptionUsageRefreshFiber);
+    }
+
     yield* Effect.try({
       try: () => context.query.close(),
       catch: (cause) =>
@@ -4267,6 +4307,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         promptQueue,
         query: queryRuntime,
         streamFiber: undefined,
+        subscriptionUsageRefreshFiber: undefined,
         startedAt,
         basePermissionMode: permissionMode,
         currentApiModelId: apiModelId,
@@ -4363,6 +4404,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       // stay empty until the session's first turn finishes, which for a resumed
       // thread the user never sends may be never.
       yield* forkSubscriptionUsage(context);
+      context.subscriptionUsageRefreshFiber = yield* forkSubscriptionUsageRefreshLoop(context);
 
       return {
         ...session,

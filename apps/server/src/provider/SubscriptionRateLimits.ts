@@ -13,6 +13,13 @@ type ProviderRateLimitWindow = {
 };
 
 /**
+ * How often a live session re-polls subscription usage while idle. Turn
+ * boundaries and rate-limit signals already refresh immediately; this cadence
+ * keeps the meters honest between turns.
+ */
+export const SUBSCRIPTION_USAGE_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+
+/**
  * The subset of the Claude SDK's structured `/usage` response we consume. Every
  * window reports `utilization` as a percentage in `0-100` and `resets_at` as an
  * ISO 8601 string, unlike the epoch-second `rate_limit_event` telemetry.

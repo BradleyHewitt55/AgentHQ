@@ -17,6 +17,7 @@ const script = JSON.parse(NodeFS.readFileSync(process.env.T3_CODEX_COLLAB_SCRIPT
 
 const write = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
 let turnStartCount = 0;
+let rateLimitsReadCount = 0;
 
 const rl = NodeReadline.createInterface({ input: process.stdin });
 rl.on("line", (line) => {
@@ -41,6 +42,20 @@ rl.on("line", (line) => {
   }
   if (method === "thread/start" || method === "thread/resume") {
     write({ id, result: fixture.responses.threadStart });
+    return;
+  }
+  if (method === "account/rateLimits/read") {
+    // Each read reports a higher utilization so tests can tell a fresh poll
+    // from a replayed one.
+    rateLimitsReadCount += 1;
+    write({
+      id,
+      result: {
+        rateLimits: {
+          primary: { usedPercent: rateLimitsReadCount * 5, windowDurationMins: 300 },
+        },
+      },
+    });
     return;
   }
   if (method === "turn/start") {

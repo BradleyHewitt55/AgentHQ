@@ -8,6 +8,7 @@ import type {
   Options as ClaudeQueryOptions,
   PermissionMode,
   PermissionResult,
+  SDKControlGetUsageResponse,
   SDKMessage,
   SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -35,6 +36,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { SUBSCRIPTION_USAGE_REFRESH_INTERVAL_MS } from "../SubscriptionRateLimits.ts";
 import { ProviderAdapterProcessError, ProviderAdapterValidationError } from "../Errors.ts";
 import type { ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
 import { makeClaudeAdapter, type ClaudeAdapterLiveOptions } from "./ClaudeAdapter.ts";
@@ -60,6 +62,9 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
   public readonly setPermissionModeCalls: Array<string> = [];
   public readonly setMaxThinkingTokensCalls: Array<number | null> = [];
   public closeCalls = 0;
+
+  /** Structured /usage control request; undefined unless a test installs it. */
+  public usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET?: () => Promise<SDKControlGetUsageResponse>;
 
   emit(message: SDKMessage): void {
     if (this.done) {
@@ -2435,6 +2440,113 @@ describe("ClaudeAdapterLive", () => {
           },
         });
       }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("refreshes subscription usage on the idle interval between turns", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      let pollCount = 0;
+      harness.query.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET = async () => {
+        pollCount += 1;
+        return {
+          rate_limits_available: true,
+          rate_limits: {
+            five_hour: { utilization: pollCount * 10, resets_at: "2026-08-21T12:00:00Z" },
+            seven_day: { utilization: 30, resets_at: "2026-08-24T00:00:00Z" },
+          },
+        } as unknown as SDKControlGetUsageResponse;
+      };
+
+      const updatesFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "account.rate-limits.updated"),
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      // The startup seed covers "now"; the loop's first tick must wait for a
+      // full interval on the test clock.
+      yield* TestClock.adjust(SUBSCRIPTION_USAGE_REFRESH_INTERVAL_MS);
+
+      const updates = Array.from(yield* Fiber.join(updatesFiber));
+      const usedPercent = updates.map((event) =>
+        event.type === "account.rate-limits.updated"
+          ? event.payload.rateLimits.fiveHour?.usedPercent
+          : undefined,
+      );
+      assert.deepEqual(usedPercent, [10, 20]);
+
+      yield* adapter.stopSession(session.threadId);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("refreshes subscription usage when a turn completes", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      let pollCount = 0;
+      harness.query.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET = async () => {
+        pollCount += 1;
+        return {
+          rate_limits_available: true,
+          rate_limits: {
+            five_hour: { utilization: pollCount * 10, resets_at: "2026-08-21T12:00:00Z" },
+          },
+        } as unknown as SDKControlGetUsageResponse;
+      };
+
+      const updatesFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "account.rate-limits.updated"),
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        attachments: [],
+      });
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        duration_ms: 1234,
+        num_turns: 1,
+        result: "done",
+        stop_reason: "end_turn",
+        session_id: "sdk-session-result-usage",
+      } as unknown as SDKMessage);
+
+      // #1 is the startSession seed; #2 can only be the completeTurn trigger —
+      // the idle interval never elapses on the test clock here.
+      const updates = Array.from(yield* Fiber.join(updatesFiber));
+      const usedPercent = updates.map((event) =>
+        event.type === "account.rate-limits.updated"
+          ? event.payload.rateLimits.fiveHour?.usedPercent
+          : undefined,
+      );
+      assert.deepEqual(usedPercent, [10, 20]);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

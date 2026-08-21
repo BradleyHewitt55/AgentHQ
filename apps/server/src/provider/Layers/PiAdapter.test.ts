@@ -459,6 +459,171 @@ describe("PiAdapter turns", () => {
     }).pipe(Effect.provide(serverConfigLayer)),
   );
 
+  it.effect("enriches a sparse Pi subagent_check snapshot with remembered identity", () =>
+    Effect.gen(function* () {
+      const adapter = yield* makeTestFixture();
+      yield* adapter.sendTurn({ threadId: THREAD_ID, input: "spawn then peek" });
+      const session = lastSession();
+      yield* waitForPromptCalls(session, 1);
+      yield* Effect.sync(() =>
+        session!.emit({
+          type: "tool_execution_end",
+          toolCallId: "spawn-1",
+          toolName: "subagent_spawn",
+          isError: false,
+          result: {
+            details: {
+              id: "sa-pi-1",
+              title: "Inspect runtime",
+              harness: "pi",
+              model: "anthropic/claude-sonnet",
+            },
+          },
+        }),
+      );
+      // subagent_check reports only id/status; its id-fallback title must not
+      // clobber the remembered identity.
+      yield* Effect.sync(() =>
+        session!.emit({
+          type: "tool_execution_end",
+          toolCallId: "check-1",
+          toolName: "subagent_check",
+          isError: false,
+          result: { details: { id: "sa-pi-1", status: "running", turns: 2 } },
+        }),
+      );
+      yield* Effect.sync(() => session!.emit({ type: "agent_settled" }));
+
+      const events = yield* drainTurn(adapter.streamEvents);
+      expect(events.filter((event) => event.type === "task.started")).toHaveLength(1);
+      const progresses = events.filter(
+        (event) => event.type === "task.progress" && event.payload.taskId === "sa-pi-1",
+      );
+      expect(progresses.length).toBeGreaterThanOrEqual(2);
+      for (const event of progresses) {
+        expect(event.payload).toMatchObject({
+          title: "Inspect runtime",
+          role: "pi subagent",
+          model: "anthropic/claude-sonnet",
+        });
+      }
+    }).pipe(Effect.provide(serverConfigLayer)),
+  );
+
+  it.effect("emits waiting progress for known Pi subagents only during subagent_wait updates", () =>
+    Effect.gen(function* () {
+      const adapter = yield* makeTestFixture();
+      yield* adapter.sendTurn({ threadId: THREAD_ID, input: "wait on agents" });
+      const session = lastSession();
+      yield* waitForPromptCalls(session, 1);
+      yield* Effect.sync(() =>
+        session!.emit({
+          type: "tool_execution_end",
+          toolCallId: "spawn-1",
+          toolName: "subagent_spawn",
+          isError: false,
+          result: { details: { id: "sa-pi-known", title: "Known agent", harness: "pi" } },
+        }),
+      );
+      yield* Effect.sync(() =>
+        session!.emit({
+          type: "tool_execution_update",
+          toolCallId: "wait-1",
+          toolName: "subagent_wait",
+          args: {},
+          partialResult: { details: { pending: ["sa-pi-known", "sa-pi-ghost"] } },
+        }),
+      );
+      // Updates from any other tool are ignored entirely.
+      yield* Effect.sync(() =>
+        session!.emit({
+          type: "tool_execution_update",
+          toolCallId: "bash-1",
+          toolName: "bash",
+          args: {},
+          partialResult: { details: { pending: ["sa-pi-known"] } },
+        }),
+      );
+      yield* Effect.sync(() => session!.emit({ type: "agent_settled" }));
+
+      const events = yield* drainTurn(adapter.streamEvents);
+      const waiting = events.filter(
+        (event) => event.type === "task.progress" && event.payload.summary === "Waiting for result",
+      );
+      expect(waiting).toHaveLength(1);
+      expect(waiting[0]).toMatchObject({
+        payload: {
+          taskId: "sa-pi-known",
+          status: "running",
+          summary: "Waiting for result",
+          taskType: "subagent",
+          title: "Known agent",
+          role: "pi subagent",
+        },
+      });
+      const ghostTasks = events.filter(
+        (event) =>
+          event.type.startsWith("task.") &&
+          (event.payload as { taskId?: string }).taskId === "sa-pi-ghost",
+      );
+      expect(ghostTasks).toHaveLength(0);
+    }).pipe(Effect.provide(serverConfigLayer)),
+  );
+
+  it.effect("does not revive a settled Pi subagent with a late wait heartbeat", () =>
+    Effect.gen(function* () {
+      const adapter = yield* makeTestFixture();
+      yield* adapter.sendTurn({ threadId: THREAD_ID, input: "wait on a finished agent" });
+      const session = lastSession();
+      yield* waitForPromptCalls(session, 1);
+      yield* Effect.sync(() =>
+        session!.emit({
+          type: "tool_execution_end",
+          toolCallId: "spawn-1",
+          toolName: "subagent_spawn",
+          isError: false,
+          result: { details: { id: "sa-pi-done", title: "Settled agent", harness: "pi" } },
+        }),
+      );
+      yield* Effect.sync(() =>
+        session!.emit({
+          type: "tool_execution_end",
+          toolCallId: "wait-1",
+          toolName: "subagent_wait",
+          isError: false,
+          result: { details: { results: [{ id: "sa-pi-done", status: "done" }] } },
+        }),
+      );
+      // A stale pending snapshot listing the already-resulted id must not
+      // reopen the run.
+      yield* Effect.sync(() =>
+        session!.emit({
+          type: "tool_execution_update",
+          toolCallId: "wait-2",
+          toolName: "subagent_wait",
+          args: {},
+          partialResult: { details: { pending: ["sa-pi-done"] } },
+        }),
+      );
+      yield* Effect.sync(() => session!.emit({ type: "agent_settled" }));
+
+      const events = yield* drainTurn(adapter.streamEvents);
+      const revived = events.filter(
+        (event) =>
+          event.type === "task.progress" &&
+          (event.payload as { taskId?: string; summary?: string }).taskId === "sa-pi-done" &&
+          (event.payload as { summary?: string }).summary === "Waiting for result",
+      );
+      expect(revived).toHaveLength(0);
+      const completions = events.filter(
+        (event) =>
+          event.type === "task.completed" &&
+          (event.payload as { taskId?: string }).taskId === "sa-pi-done",
+      );
+      expect(completions).toHaveLength(1);
+    }).pipe(Effect.provide(serverConfigLayer)),
+  );
+
   it.effect("queues a follow-up message into the live turn instead of failing", () =>
     Effect.gen(function* () {
       const adapter = yield* makeTestFixture();
