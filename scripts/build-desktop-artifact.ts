@@ -698,9 +698,25 @@ export const DESKTOP_FILE_EXCLUSIONS = [
 // have to be loose are the server bundle itself and the packages the bundle
 // leaves external — derived from the same list the bundler uses, so the two
 // cannot drift apart.
+//
+// The Pi SDK (@earendil-works/pi-coding-agent + pi-ai + pi-agent-core) is
+// loaded dynamically at runtime (see apps/server/src/provider/Layers/piSdk.ts)
+// and its OAuth-backed providers (e.g. openai-codex) fail instantly in the
+// packaged app while working from an unpacked checkout, so it is unpacked here
+// as well pending root-cause confirmation.
+const PI_SDK_UNPACK_PREFIXES = [
+  "@earendil-works/pi-coding-agent",
+  "@earendil-works/pi-ai",
+  "@earendil-works/pi-agent-core",
+] as const;
+const PI_SDK_UNPACK_GLOBS = PI_SDK_UNPACK_PREFIXES.flatMap(
+  (prefix) =>
+    [`node_modules/${prefix}*/**/*`, `node_modules/.pnpm/**/node_modules/${prefix}*/**/*`] as const,
+);
 export const WINDOWS_ASAR_UNPACK = [
   "apps/server/dist/**",
   ...CLI_EXTERNAL_PACKAGE_UNPACK_GLOBS,
+  ...PI_SDK_UNPACK_GLOBS,
 ] as const;
 export const DESKTOP_EXTRA_RESOURCES = [
   {

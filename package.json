@@ -5,6 +5,7 @@
   "scripts": {
     "prepare": "node scripts/clean-tsgo-backups.mjs && effect-tsgo patch && vp config --no-agent",
     "dev": "node scripts/dev-runner.ts dev",
+    "dev:docker": "T3CODE_DOCKER=1 T3CODE_HOST=0.0.0.0 node scripts/dev-runner.ts dev",
     "dev:share": "node scripts/dev-runner.ts dev --share",
     "dev:server": "node scripts/dev-runner.ts dev:server",
     "dev:web": "node scripts/dev-runner.ts dev:web",

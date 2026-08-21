@@ -12,36 +12,51 @@ type ProviderRateLimitWindow = {
   readonly windowDurationMins?: number | null;
 };
 
-type ClaudeRateLimitInfo = {
-  readonly rateLimitType?:
-    | "five_hour"
-    | "seven_day"
-    | "seven_day_opus"
-    | "seven_day_sonnet"
-    | "overage";
-  readonly resetsAt?: number;
-  readonly utilization?: number;
+/**
+ * The subset of the Claude SDK's structured `/usage` response we consume. Every
+ * window reports `utilization` as a percentage in `0-100` and `resets_at` as an
+ * ISO 8601 string, unlike the epoch-second `rate_limit_event` telemetry.
+ */
+type ClaudeUsageWindow = {
+  readonly utilization?: number | null;
+  readonly resets_at?: string | null;
 };
 
-function toPercent(value: number, fractional: boolean): number | undefined {
+export type ClaudeUsageSnapshot = {
+  readonly rate_limits_available?: boolean;
+  readonly rate_limits?: {
+    readonly five_hour?: ClaudeUsageWindow | null;
+    readonly seven_day?: ClaudeUsageWindow | null;
+    readonly seven_day_opus?: ClaudeUsageWindow | null;
+    readonly seven_day_sonnet?: ClaudeUsageWindow | null;
+  } | null;
+};
+
+function toPercent(value: number): number | undefined {
   if (!Number.isFinite(value) || value < 0) return undefined;
-  const percent = fractional && value <= 1 ? value * 100 : value;
-  return Math.min(100, Math.round(percent * 10) / 10);
+  return Math.min(100, Math.round(value * 10) / 10);
 }
 
 function toIsoDateTime(timestamp: number | null | undefined): string | null {
   if (timestamp === undefined || timestamp === null || !Number.isFinite(timestamp)) return null;
-  // Codex reports epoch seconds while Claude's SDK currently reports epoch milliseconds.
+  // Codex and Claude both report epoch seconds, but the millisecond branch keeps
+  // us honest if either ever switches units.
   const milliseconds = Math.abs(timestamp) < 1_000_000_000_000 ? timestamp * 1_000 : timestamp;
   const date = new Date(milliseconds);
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
+function toIsoDateTimeFromString(value: string | null | undefined): string | null {
+  if (value === undefined || value === null) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
 function toWindow(
   source: { readonly usedPercent: number; readonly resetsAt?: number | null },
-  options?: { readonly fractional?: boolean; readonly label?: string },
+  options?: { readonly label?: string },
 ): SubscriptionRateLimitWindow | undefined {
-  const usedPercent = toPercent(source.usedPercent, options?.fractional ?? false);
+  const usedPercent = toPercent(source.usedPercent);
   if (usedPercent === undefined) return undefined;
   return {
     usedPercent,
@@ -97,36 +112,53 @@ export function normalizeCodexSubscriptionRateLimits(input: {
   };
 }
 
-/** Normalizes Claude Code's subscription telemetry without exposing SDK payloads. */
-export function normalizeClaudeSubscriptionRateLimits(
-  input: ClaudeRateLimitInfo,
-): SubscriptionRateLimitsUpdate | undefined {
-  if (input.utilization === undefined) return undefined;
-  const label =
-    input.rateLimitType === "seven_day_opus"
-      ? "Opus"
-      : input.rateLimitType === "seven_day_sonnet"
-        ? "Sonnet"
-        : undefined;
-  const window = toWindow(
-    {
-      usedPercent: input.utilization,
-      ...(input.resetsAt === undefined ? {} : { resetsAt: input.resetsAt }),
-    },
-    { fractional: true, ...(label ? { label } : {}) },
-  );
-  if (!window) return undefined;
+function claudeUsageWindow(
+  window: ClaudeUsageWindow | null | undefined,
+  label?: string,
+): SubscriptionRateLimitWindow | undefined {
+  if (!window || window.utilization === undefined || window.utilization === null) return undefined;
+  const usedPercent = toPercent(window.utilization);
+  if (usedPercent === undefined) return undefined;
+  return {
+    usedPercent,
+    resetsAt: toIsoDateTimeFromString(window.resets_at),
+    ...(label ? { label } : {}),
+  };
+}
 
-  switch (input.rateLimitType) {
-    case "five_hour":
-      return { provider: "claude", fiveHour: window };
-    case "seven_day":
-    case "seven_day_opus":
-    case "seven_day_sonnet":
-      return { provider: "claude", weekly: [window] };
-    default:
-      return undefined;
-  }
+/**
+ * Normalizes the Claude SDK's structured `/usage` snapshot.
+ *
+ * This is the only source of Claude subscription utilization: `rate_limit_event`
+ * carries a threshold status (`allowed` / `allowed_warning` / `rejected`) and a
+ * reset timestamp, but no utilization figure, so it can never populate the
+ * meters on its own.
+ *
+ * `rate_limits_available` is false for API-key, Bedrock, and Vertex sessions,
+ * where plan limits simply do not apply.
+ */
+export function normalizeClaudeUsageSnapshot(
+  snapshot: ClaudeUsageSnapshot,
+): SubscriptionRateLimitsUpdate | undefined {
+  if (snapshot.rate_limits_available === false) return undefined;
+  const limits = snapshot.rate_limits;
+  if (!limits) return undefined;
+
+  const fiveHour = claudeUsageWindow(limits.five_hour);
+  // Claude reports an overall seven-day window plus per-model windows on plans
+  // that meter Opus separately; we surface whichever of the three it sends.
+  const weekly = [
+    claudeUsageWindow(limits.seven_day),
+    claudeUsageWindow(limits.seven_day_opus, "Opus"),
+    claudeUsageWindow(limits.seven_day_sonnet, "Sonnet"),
+  ].filter((window): window is SubscriptionRateLimitWindow => window !== undefined);
+
+  if (!fiveHour && weekly.length === 0) return undefined;
+  return {
+    provider: "claude",
+    ...(fiveHour ? { fiveHour } : {}),
+    ...(weekly.length > 0 ? { weekly } : {}),
+  };
 }
 
 export function unavailableSubscriptionUsage(

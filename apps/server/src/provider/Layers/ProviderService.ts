@@ -261,12 +261,18 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       Effect.tap((canonicalEvent) =>
         canonicalEvent.type === "account.rate-limits.updated"
           ? Effect.gen(function* () {
-              const current = yield* Ref.get(subscriptionUsage);
-              const snapshot = applySubscriptionRateLimitsUpdate(
-                current[canonicalEvent.payload.rateLimits.provider],
-                canonicalEvent.payload.rateLimits,
-                canonicalEvent.createdAt,
-              );
+              // Merge and publish atomically: reading, awaiting the write, then
+              // setting would let two concurrent updates for the same provider
+              // (a five-hour and a weekly window arriving together) clobber each
+              // other's windows.
+              const snapshot = yield* Ref.modify(subscriptionUsage, (current) => {
+                const next = applySubscriptionRateLimitsUpdate(
+                  current[canonicalEvent.payload.rateLimits.provider],
+                  canonicalEvent.payload.rateLimits,
+                  canonicalEvent.createdAt,
+                );
+                return [next, { ...current, [next.provider]: next }] as const;
+              });
               yield* subscriptionUsageRepository.upsert(snapshot).pipe(
                 Effect.catch((error) =>
                   Effect.logWarning("failed to persist provider subscription usage", {
@@ -275,10 +281,6 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
                   }),
                 ),
               );
-              yield* Ref.set(subscriptionUsage, {
-                ...current,
-                [snapshot.provider]: snapshot,
-              });
             })
           : Effect.void,
       ),

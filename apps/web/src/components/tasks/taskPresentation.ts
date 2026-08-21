@@ -96,3 +96,28 @@ export function buildTaskHandoffPrompt(task: Task): string {
   }
   return lines.join("\n");
 }
+
+/**
+ * Prompt seeded into the composer when several tasks are passed to an agent
+ * at once. Each task keeps its own numbered section (title, body, issue
+ * reference) so the agent can work them independently.
+ */
+export function buildTaskHandoffPromptBatch(tasks: ReadonlyArray<Task>): string {
+  if (tasks.length === 0) return "";
+  if (tasks.length === 1) return buildTaskHandoffPrompt(tasks[0]!);
+
+  const lines = ["Work on these tasks:"];
+  for (const [index, task] of tasks.entries()) {
+    const reference = taskIssueLabel(task);
+    const heading = reference === null ? task.title : `${task.title} (${reference})`;
+    lines.push("", `${index + 1}. ${heading}`);
+    const body = task.body.trim();
+    if (body !== "") {
+      lines.push("", body);
+    }
+    if (task.github !== null) {
+      lines.push("", `GitHub issue: ${task.github.issueUrl}`);
+    }
+  }
+  return lines.join("\n");
+}

@@ -14,6 +14,7 @@ import { groupTasksByStatus } from "~/state/taskActions";
 
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { Checkbox } from "../ui/checkbox";
 import { Menu, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "../ui/menu";
 import { ScrollArea } from "../ui/scroll-area";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -30,11 +31,16 @@ interface TaskBoardPanelProps {
   view: ProjectTasksView;
   /** Hands the task to an agent in this project; absent when no chat is available. */
   onPassToAgent?: (task: Task) => void;
+  /** Hands several selected tasks to an agent at once; absent when no chat is available. */
+  onPassTasksToAgent?: (tasks: Task[]) => void;
 }
 
 function TaskCard(props: {
   task: Task;
   view: ProjectTasksView;
+  selected: boolean;
+  selectable: boolean;
+  onToggleSelected: (taskId: string) => void;
   onPassToAgent?: (task: Task) => void;
 }) {
   const { task, view } = props;
@@ -71,7 +77,17 @@ function TaskCard(props: {
   return (
     <div className="rounded-md border border-border/60 bg-card p-2.5 text-sm shadow-xs">
       <div className="flex items-start justify-between gap-2">
-        <span className="font-medium leading-snug">{task.title}</span>
+        <div className="flex min-w-0 items-start gap-2">
+          {props.selectable && (
+            <Checkbox
+              checked={props.selected}
+              onCheckedChange={() => props.onToggleSelected(task.taskId)}
+              aria-label={`Select "${task.title}"`}
+              className="mt-0.5"
+            />
+          )}
+          <span className="min-w-0 font-medium leading-snug">{task.title}</span>
+        </div>
         {issueLabel === null ? (
           <Badge variant="outline" className="shrink-0 text-[10px]">
             Draft
@@ -184,6 +200,8 @@ function TaskColumn(props: {
   label: string;
   tasks: ReadonlyArray<Task>;
   view: ProjectTasksView;
+  selectedTaskIds: ReadonlySet<string>;
+  onToggleSelected: (taskId: string) => void;
   onPassToAgent?: (task: Task) => void;
 }) {
   return (
@@ -205,6 +223,9 @@ function TaskColumn(props: {
               key={task.taskId}
               task={task}
               view={props.view}
+              selected={props.selectedTaskIds.has(task.taskId)}
+              selectable={task.status !== "done"}
+              onToggleSelected={props.onToggleSelected}
               {...(props.onPassToAgent ? { onPassToAgent: props.onPassToAgent } : {})}
             />
           ))
@@ -216,12 +237,14 @@ function TaskColumn(props: {
 
 /**
  * Kanban view of a project's tasks. Columns mirror {@link TaskStatus}; the
- * server keeps ordering within a column.
+ * server keeps ordering within a column. Tasks can be multi-selected and
+ * handed to an agent in one go.
  */
 export const TaskBoardPanel = memo(function TaskBoardPanel(props: TaskBoardPanelProps) {
   const { view } = props;
   const columns = groupTasksByStatus(view.tasks);
   const [syncing, setSyncing] = useState(false);
+  const [selectedTaskIds, setSelectedTaskIds] = useState<ReadonlySet<string>>(new Set());
 
   const handleSync = useCallback(async () => {
     setSyncing(true);
@@ -231,6 +254,29 @@ export const TaskBoardPanel = memo(function TaskBoardPanel(props: TaskBoardPanel
       setSyncing(false);
     }
   }, [view]);
+
+  const handleToggleSelected = useCallback((taskId: string) => {
+    setSelectedTaskIds((current) => {
+      const next = new Set(current);
+      if (next.has(taskId)) {
+        next.delete(taskId);
+      } else {
+        next.add(taskId);
+      }
+      return next;
+    });
+  }, []);
+
+  const handlePassSelectedToAgent = useCallback(() => {
+    if (props.onPassTasksToAgent && selectedTaskIds.size > 0) {
+      props.onPassTasksToAgent(view.tasks.filter((task) => selectedTaskIds.has(task.taskId)));
+    }
+    setSelectedTaskIds(new Set());
+  }, [props.onPassTasksToAgent, selectedTaskIds, view.tasks]);
+
+  const handleClearSelection = useCallback(() => {
+    setSelectedTaskIds(new Set());
+  }, []);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -249,6 +295,26 @@ export const TaskBoardPanel = memo(function TaskBoardPanel(props: TaskBoardPanel
           </Button>
         )}
       </div>
+
+      {selectedTaskIds.size > 0 && (
+        <div className="flex items-center justify-between gap-2 border-b border-border/60 px-3 py-2">
+          <span className="text-xs text-muted-foreground">{selectedTaskIds.size} selected</span>
+          <div className="flex items-center gap-1">
+            <Button
+              size="sm"
+              disabled={props.onPassTasksToAgent === undefined}
+              onClick={handlePassSelectedToAgent}
+              className="gap-1.5 text-xs"
+            >
+              <PlayIcon className="size-3" />
+              Pass to agent
+            </Button>
+            <Button size="sm" variant="ghost" onClick={handleClearSelection} className="text-xs">
+              Clear
+            </Button>
+          </div>
+        </div>
+      )}
 
       <div className="border-b border-border/60 px-3 py-2">
         <TaskComposer view={view} />
@@ -272,6 +338,8 @@ export const TaskBoardPanel = memo(function TaskBoardPanel(props: TaskBoardPanel
               label={column.label}
               tasks={columns[column.status]}
               view={view}
+              selectedTaskIds={selectedTaskIds}
+              onToggleSelected={handleToggleSelected}
               {...(props.onPassToAgent ? { onPassToAgent: props.onPassToAgent } : {})}
             />
           ))}

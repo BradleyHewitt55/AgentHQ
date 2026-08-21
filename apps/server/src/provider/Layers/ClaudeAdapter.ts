@@ -15,6 +15,7 @@ import {
   type PermissionUpdate,
   type SDKMessage,
   type SDKControlGetContextUsageResponse,
+  type SDKControlGetUsageResponse,
   type SDKResultMessage,
   type SettingSource,
   type SDKUserMessage,
@@ -95,11 +96,18 @@ import {
 } from "../Errors.ts";
 import { type ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
-import { normalizeClaudeSubscriptionRateLimits } from "../SubscriptionRateLimits.ts";
+import { normalizeClaudeUsageSnapshot } from "../SubscriptionRateLimits.ts";
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.fromJsonString(Schema.Unknown));
 const decodeUnknownJsonStringExit = Schema.decodeUnknownExit(Schema.fromJsonString(Schema.Unknown));
 
 const PROVIDER = ProviderDriverKind.make("claudeAgent");
+
+/**
+ * The structured `/usage` control request round-trips to claude.ai, so cap it
+ * rather than letting a stalled account lookup pin a turn-completion fiber.
+ */
+const CLAUDE_SUBSCRIPTION_USAGE_TIMEOUT_MS = 10_000;
+
 type ClaudeTextStreamKind = Extract<RuntimeContentStreamKind, "assistant_text" | "reasoning_text">;
 type ClaudeToolResultStreamKind = Extract<
   RuntimeContentStreamKind,
@@ -257,6 +265,13 @@ interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
   readonly setPermissionMode: (mode: PermissionMode) => Promise<void>;
   readonly setMaxThinkingTokens: (maxThinkingTokens: number | null) => Promise<void>;
   readonly getContextUsage?: () => Promise<SDKControlGetContextUsageResponse>;
+  /**
+   * SDK Query structured `/usage` control request — the only source of
+   * subscription rate-limit utilization. Named after the SDK export, which is
+   * flagged experimental, so it stays optional here and every call is
+   * failure-tolerant.
+   */
+  readonly usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET?: () => Promise<SDKControlGetUsageResponse>;
   readonly close: () => void;
 }
 
@@ -410,13 +425,6 @@ function maxClaudeContextWindowFromModelUsage(
 function selectedClaudeContextWindow(
   modelSelection: ModelSelection | undefined,
 ): number | undefined {
-  switch (modelSelection?.model) {
-    case "claude-opus-4-8":
-    case "claude-opus-4-7":
-      // Always 1M at the API; these models expose no contextWindow option.
-      return 1_000_000;
-  }
-
   switch (resolveClaudeContextWindow(modelSelection)) {
     case "1m":
       return 1_000_000;
@@ -2085,6 +2093,60 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     return normalizeClaudeContextUsageApiSnapshot(usage, totalProcessedTokens);
   });
 
+  /**
+   * Publishes the account's subscription windows from the SDK's structured
+   * `/usage` snapshot. `rate_limit_event` only reports a threshold status, so
+   * this poll is what actually populates the meters; it is best-effort and
+   * silently no-ops for API-key, Bedrock, and Vertex sessions, where the SDK
+   * reports `rate_limits_available: false`.
+   */
+  const emitSubscriptionUsage = Effect.fn("emitSubscriptionUsage")(function* (
+    context: ClaudeSessionContext,
+  ) {
+    if (!context.query.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET) {
+      return;
+    }
+
+    const snapshot = yield* Effect.promise(async () => {
+      try {
+        return await context.query.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET?.();
+      } catch {
+        return undefined;
+      }
+    }).pipe(
+      Effect.timeoutOption(CLAUDE_SUBSCRIPTION_USAGE_TIMEOUT_MS),
+      Effect.map(Option.getOrUndefined),
+    );
+    if (!snapshot) {
+      return;
+    }
+
+    const rateLimits = normalizeClaudeUsageSnapshot(snapshot);
+    if (!rateLimits) {
+      return;
+    }
+
+    const turnState = context.turnState;
+    const stamp = yield* makeEventStamp();
+    yield* offerRuntimeEvent({
+      type: "account.rate-limits.updated",
+      eventId: stamp.eventId,
+      provider: PROVIDER,
+      createdAt: stamp.createdAt,
+      threadId: context.session.threadId,
+      ...(turnState ? { turnId: asCanonicalTurnId(turnState.turnId) } : {}),
+      payload: { rateLimits },
+      providerRefs: nativeProviderRefs(context),
+    });
+  });
+
+  /**
+   * Detached so a slow account lookup never delays turn completion or stalls
+   * the SDK message stream — nothing downstream waits on the account windows.
+   */
+  const forkSubscriptionUsage = (context: ClaudeSessionContext) =>
+    Effect.forkDetach(emitSubscriptionUsage(context));
+
   const emitProposedPlanCompleted = Effect.fn("emitProposedPlanCompleted")(function* (
     context: ClaudeSessionContext,
     input: {
@@ -2189,6 +2251,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       context,
       accumulatedTotalProcessedTokens ?? context.lastKnownTotalProcessedTokens,
     );
+    // A finished turn is the point where the account's windows have just moved.
+    yield* forkSubscriptionUsage(context);
     const resultUsageRecord =
       result?.usage && typeof result.usage === "object" && !Array.isArray(result.usage)
         ? (result.usage as Record<string, unknown>)
@@ -3477,14 +3541,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
 
     if (message.type === "rate_limit_event") {
-      const rateLimits = normalizeClaudeSubscriptionRateLimits(message.rate_limit_info);
-      if (rateLimits) {
-        yield* offerRuntimeEvent({
-          ...base,
-          type: "account.rate-limits.updated",
-          payload: { rateLimits },
-        });
-      }
+      // The event itself carries only a threshold status and reset time, never a
+      // utilization figure — treat it as a signal to re-read the real snapshot.
+      yield* forkSubscriptionUsage(context);
       return;
     }
   });
@@ -4299,6 +4358,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           context.streamFiber = undefined;
         }
       });
+
+      // Seed the subscription meters off the critical path — without this they
+      // stay empty until the session's first turn finishes, which for a resumed
+      // thread the user never sends may be never.
+      yield* forkSubscriptionUsage(context);
 
       return {
         ...session,

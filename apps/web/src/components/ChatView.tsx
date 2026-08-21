@@ -138,6 +138,7 @@ import {
   useThreadPreviewState,
 } from "../previewStateStore";
 import { addBrowserSurface } from "./preview/addBrowserSurface";
+import { openUrlInPreview } from "../browser/openFileInPreview";
 import { closePreviewSession } from "./preview/closePreviewSession";
 import { ThreadPreviewMiniPlayer } from "./preview/ThreadPreviewMiniPlayer";
 import { subscribePreviewAction } from "./preview/previewActionBus";
@@ -162,7 +163,11 @@ import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings"
 import PlanSidebar from "./PlanSidebar";
 import { TaskBoardPanel } from "./tasks/TaskBoardPanel";
 import { TasksQuickAction } from "./tasks/TasksQuickAction";
-import { buildTaskHandoffPrompt, statusAfterHandoff } from "./tasks/taskPresentation";
+import {
+  buildTaskHandoffPrompt,
+  buildTaskHandoffPromptBatch,
+  statusAfterHandoff,
+} from "./tasks/taskPresentation";
 import { useProjectTasks } from "~/state/taskActions";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
 import {
@@ -3222,6 +3227,14 @@ function ChatViewContent(props: ChatViewProps) {
     if (!activeThreadRef) return;
     void addBrowserSurface({ threadRef: activeThreadRef, openPreview });
   }, [activeThreadRef, openPreview]);
+  const openChatGptSurface = useCallback(() => {
+    if (!activeThreadRef || !isPreviewSupportedInRuntime()) return;
+    void openUrlInPreview({
+      threadRef: activeThreadRef,
+      url: "https://chatgpt.com/",
+      openPreview,
+    });
+  }, [activeThreadRef, openPreview]);
   const addDiffSurface = useCallback(() => {
     if (!activeThreadRef || !isServerThread || !isGitRepo) return;
     if (planSidebarOpen) {
@@ -3237,10 +3250,29 @@ function ChatViewContent(props: ChatViewProps) {
     onDiffPanelOpen,
     planSidebarOpen,
   ]);
+  // Hovering the far-right edge of the web view reveals the whole right panel.
+  // A click inside pins it; leaving without clicking restores the closed state.
+  const hoverOpenedRightPanelRef = useRef(false);
   const addFilesSurface = useCallback(() => {
     if (!activeThreadRef || !activeProject) return;
     useRightPanelStore.getState().open(activeThreadRef, "files");
   }, [activeProject, activeThreadRef]);
+  const hoverOpenRightPanel = useCallback(() => {
+    if (!activeThreadRef) return;
+    const state = useRightPanelStore.getState();
+    const threadState = selectThreadRightPanelState(state.byThreadKey, activeThreadRef);
+    if (threadState.isOpen) return;
+    hoverOpenedRightPanelRef.current = true;
+    state.show(activeThreadRef);
+  }, [activeThreadRef]);
+  const pinHoverOpenedRightPanel = useCallback(() => {
+    hoverOpenedRightPanelRef.current = false;
+  }, []);
+  const closeHoverOpenedRightPanel = useCallback(() => {
+    if (!hoverOpenedRightPanelRef.current || !activeThreadRef) return;
+    hoverOpenedRightPanelRef.current = false;
+    useRightPanelStore.getState().close(activeThreadRef);
+  }, [activeThreadRef]);
   const addAgentsSurface = useCallback(() => {
     if (!activeThreadRef) return;
     useRightPanelStore.getState().open(activeThreadRef, "agents");
@@ -3285,6 +3317,29 @@ function ChatViewContent(props: ChatViewProps) {
         // Only tasks already filed as issues need their board column mirrored.
         pushToGitHub: task.github !== null,
       });
+    },
+    [activeThreadId, composerRef, projectTasks, scheduleComposerFocus],
+  );
+  /**
+   * Hand several tasks to the agent at once: seed the composer with a combined
+   * prompt, then move each task into `in_progress` (mirroring to GitHub when
+   * linked).
+   */
+  const passTasksToAgent = useCallback(
+    (tasks: Task[]) => {
+      if (tasks.length === 0) return;
+      composerRef.current?.insertTextAtEnd(buildTaskHandoffPromptBatch(tasks), {
+        ensureLeadingBoundary: true,
+      });
+      scheduleComposerFocus();
+      for (const task of tasks) {
+        const nextStatus = statusAfterHandoff(task);
+        void projectTasks.updateTask(task.taskId, {
+          status: nextStatus,
+          ...(activeThreadId ? { threadId: activeThreadId } : {}),
+          pushToGitHub: task.github !== null,
+        });
+      }
     },
     [activeThreadId, composerRef, projectTasks, scheduleComposerFocus],
   );
@@ -3429,6 +3484,7 @@ function ChatViewContent(props: ChatViewProps) {
   const activateRightPanelSurface = useCallback(
     (surface: RightPanelSurface) => {
       if (!activeThreadRef) return;
+      hoverOpenedRightPanelRef.current = false;
       if (surface.kind === "plan") {
         planSidebarDismissedForTurnRef.current = null;
       } else if (planSidebarOpen) {
@@ -3592,8 +3648,9 @@ function ChatViewContent(props: ChatViewProps) {
     () =>
       subscribePreviewAction((action) => {
         if (action === "toggle-panel") togglePreviewPanel();
+        if (action === "open-chatgpt") openChatGptSurface();
       }),
-    [togglePreviewPanel],
+    [openChatGptSurface, togglePreviewPanel],
   );
   const persistThreadSettingsForNextTurn = useCallback(
     async (input: {
@@ -5968,7 +6025,11 @@ function ChatViewContent(props: ChatViewProps) {
         />
       </Suspense>
     ) : activeRightPanelSurface?.kind === "tasks" ? (
-      <TaskBoardPanel view={projectTasks} onPassToAgent={passTaskToAgent} />
+      <TaskBoardPanel
+        view={projectTasks}
+        onPassToAgent={passTaskToAgent}
+        onPassTasksToAgent={passTasksToAgent}
+      />
     ) : activeRightPanelSurface?.kind === "plan" ? (
       <PlanSidebar
         activePlan={activePlan}
@@ -6456,39 +6517,55 @@ function ChatViewContent(props: ChatViewProps) {
         ))}
       </div>
 
+      {!shouldUsePlanSidebarSheet && !rightPanelOpen && activeThreadRef ? (
+        <div
+          aria-hidden="true"
+          className="fixed inset-y-0 right-0 z-30 w-2"
+          data-right-panel-edge-trigger
+          onMouseEnter={hoverOpenRightPanel}
+        />
+      ) : null}
+
       {!shouldUsePlanSidebarSheet && rightPanelOpen && activeThreadRef ? (
-        <RightPanelTabs
-          mode="inline"
-          maximized={rightPanelMaximized}
-          surfaces={rightPanelState.surfaces}
-          activeSurfaceId={activeRightPanelSurface?.id ?? null}
-          pendingSurfaceIds={pendingFileSurfaceIds}
-          previewSessions={activePreviewState.sessions}
-          desktopByTabId={activePreviewState.desktopByTabId}
-          terminalLabelsById={activeTerminalLabelsById}
-          onActivate={activateRightPanelSurface}
-          onCloseSurface={closeRightPanelSurface}
-          onCloseOtherSurfaces={closeOtherRightPanelSurfaces}
-          onCloseSurfacesToRight={closeRightPanelSurfacesToRight}
-          onCloseAllSurfaces={closeAllRightPanelSurfaces}
-          onCopyFilePath={copyRightPanelFilePath}
-          onAddBrowser={createBrowserSurface}
-          onAddTerminal={addTerminalSurface}
-          onAddDiff={addDiffSurface}
-          onAddFiles={addFilesSurface}
-          onAddPullRequest={addPullRequestSurface}
-          onAddAgents={addAgentsSurface}
-          browserAvailable={isPreviewSupportedInRuntime()}
-          terminalAvailable={activeProject !== null}
-          diffAvailable={isServerThread && isGitRepo}
-          filesAvailable={activeProject !== null}
-          pullRequestAvailable={pullRequestSurfaceAvailable}
-          agentsAvailable
-          pullRequestStatuses={pullRequestTabStatuses}
-          liveAgentCount={agentPanelModel.liveCount}
+        <div
+          className="flex min-h-0 min-w-0"
+          onMouseLeave={closeHoverOpenedRightPanel}
+          onMouseDownCapture={pinHoverOpenedRightPanel}
+          data-right-panel-hover-scope
         >
-          {rightPanelContent}
-        </RightPanelTabs>
+          <RightPanelTabs
+            mode="inline"
+            maximized={rightPanelMaximized}
+            surfaces={rightPanelState.surfaces}
+            activeSurfaceId={activeRightPanelSurface?.id ?? null}
+            pendingSurfaceIds={pendingFileSurfaceIds}
+            previewSessions={activePreviewState.sessions}
+            desktopByTabId={activePreviewState.desktopByTabId}
+            terminalLabelsById={activeTerminalLabelsById}
+            onActivate={activateRightPanelSurface}
+            onCloseSurface={closeRightPanelSurface}
+            onCloseOtherSurfaces={closeOtherRightPanelSurfaces}
+            onCloseSurfacesToRight={closeRightPanelSurfacesToRight}
+            onCloseAllSurfaces={closeAllRightPanelSurfaces}
+            onCopyFilePath={copyRightPanelFilePath}
+            onAddBrowser={createBrowserSurface}
+            onAddTerminal={addTerminalSurface}
+            onAddDiff={addDiffSurface}
+            onAddFiles={addFilesSurface}
+            onAddPullRequest={addPullRequestSurface}
+            onAddAgents={addAgentsSurface}
+            browserAvailable={isPreviewSupportedInRuntime()}
+            terminalAvailable={activeProject !== null}
+            diffAvailable={isServerThread && isGitRepo}
+            filesAvailable={activeProject !== null}
+            pullRequestAvailable={pullRequestSurfaceAvailable}
+            agentsAvailable
+            pullRequestStatuses={pullRequestTabStatuses}
+            liveAgentCount={agentPanelModel.liveCount}
+          >
+            {rightPanelContent}
+          </RightPanelTabs>
+        </div>
       ) : null}
       {shouldUsePlanSidebarSheet && rightPanelOpen && activeThreadRef ? (
         <RightPanelSheet open onClose={planSidebarOpen ? closePlanSidebar : closePreviewPanel}>

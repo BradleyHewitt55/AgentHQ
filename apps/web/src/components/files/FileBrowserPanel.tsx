@@ -373,6 +373,40 @@ interface PasteConflict {
   paths: readonly string[];
 }
 
+const FILE_TREE_EXPANSION_STORAGE_PREFIX = "t3code:file-tree-expansion:v1";
+
+function fileTreeExpansionStorageKey(environmentId: EnvironmentId, cwd: string): string {
+  return `${FILE_TREE_EXPANSION_STORAGE_PREFIX}:${environmentId}:${cwd}`;
+}
+
+function readPersistedExpandedPaths(environmentId: EnvironmentId, cwd: string): readonly string[] {
+  try {
+    const value = window.localStorage.getItem(fileTreeExpansionStorageKey(environmentId, cwd));
+    if (value === null) return [];
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed)
+      ? parsed.filter((path): path is string => typeof path === "string").slice(0, 500)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function persistExpandedPaths(
+  environmentId: EnvironmentId,
+  cwd: string,
+  paths: readonly string[],
+): void {
+  try {
+    window.localStorage.setItem(
+      fileTreeExpansionStorageKey(environmentId, cwd),
+      JSON.stringify(paths.slice(0, 500)),
+    );
+  } catch {
+    // Storage can be unavailable in private/restricted browser contexts.
+  }
+}
+
 export default function FileBrowserPanel({
   environmentId,
   cwd,
@@ -404,6 +438,7 @@ export default function FileBrowserPanel({
     [entries],
   );
   const previousTreePathsRef = useRef<readonly string[]>([]);
+  const persistedExpandedPathsRef = useRef(readPersistedExpandedPaths(environmentId, cwd));
   const syncingSelectionRef = useRef(false);
   const treeSelectionPathRef = useRef<string | null>(null);
   const handledRevealRef = useRef<{ path: string; revealId: number } | null>(null);
@@ -719,11 +754,7 @@ export default function FileBrowserPanel({
         { id: "paste", label: "Paste" },
       );
     }
-    items.push(
-      { id: "copy", label: "Copy" },
-      { id: "cut", label: "Cut" },
-      { id: "copy-mention", label: "Copy mention" },
-    );
+    items.push({ id: "cut", label: "Cut" }, { id: "copy-mention", label: "Copy mention" });
     items.push({ id: "add-to-chat", label: "Add to chat" });
     if (item.kind === "file") {
       items.push({ id: "open", label: "Open" });
@@ -735,9 +766,6 @@ export default function FileBrowserPanel({
     try {
       const clicked = await api.contextMenu.show(items, position);
       switch (clicked) {
-        case "copy":
-          copySelection("copy", item.path, model.getSelectedPaths());
-          return;
         case "cut":
           copySelection("cut", item.path, model.getSelectedPaths());
           return;
@@ -938,6 +966,17 @@ export default function FileBrowserPanel({
   });
   const search = useFileTreeSearch(model);
 
+  useEffect(
+    () => () => {
+      const expandedPaths = getExpandedDirectoryPaths(previousTreePathsRef.current, (path) => {
+        const item = model.getItem(path);
+        return item?.isDirectory() === true && "isExpanded" in item && item.isExpanded();
+      });
+      persistExpandedPaths(environmentId, cwd, expandedPaths);
+    },
+    [cwd, environmentId, model],
+  );
+
   // Begin an inline create draft: add a temporary "untitled" row at the
   // target folder (or the tree root) and hand it to the tree's rename input.
   // The tree removes the row if the user cancels; on commit, the draft is
@@ -1047,10 +1086,13 @@ export default function FileBrowserPanel({
 
   useEffect(() => {
     if (previousTreePathsRef.current === treePaths) return;
-    const expandedPaths = getExpandedDirectoryPaths(previousTreePathsRef.current, (path) => {
-      const item = model.getItem(path);
-      return item?.isDirectory() === true && "isExpanded" in item && item.isExpanded();
-    });
+    const expandedPaths =
+      previousTreePathsRef.current.length === 0
+        ? persistedExpandedPathsRef.current
+        : getExpandedDirectoryPaths(previousTreePathsRef.current, (path) => {
+            const item = model.getItem(path);
+            return item?.isDirectory() === true && "isExpanded" in item && item.isExpanded();
+          });
     entryKindsRef.current = entryKinds;
     previousTreePathsRef.current = treePaths;
     model.resetPaths(treePaths, { initialExpandedPaths: expandedPaths });

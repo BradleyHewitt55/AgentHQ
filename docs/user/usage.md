@@ -8,3 +8,6 @@ cost shown here.
 Use **Past 24h** for an hourly chart covering the exact rolling 24-hour period. The **7 days**,
 **30 days**, and **90 days** ranges use daily resolution. Cost and token toggles update both the
 headline and chart, and refreshing rescans every connected environment.
+
+The compact subscription meters refresh every five minutes and after a provider turn settles. Hover
+a meter to see all available limit windows, reset times, and when the provider last reported them.

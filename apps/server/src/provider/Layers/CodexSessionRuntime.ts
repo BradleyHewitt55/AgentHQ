@@ -1681,6 +1681,29 @@ export const makeCodexSessionRuntime = (
       Effect.forkIn(runtimeScope),
     );
 
+    /**
+     * `account/rateLimits/updated` is a sparse rolling delta that only arrives
+     * mid-turn, so a session that never sends a turn — or an account whose
+     * notification omits a window — leaves the subscription meters empty or
+     * stale. Reading the full snapshot at startup gives every window a value up
+     * front; later notifications merge on top. Best-effort: an account lookup
+     * failure must not fail session start.
+     */
+    const seedRateLimits = Effect.gen(function* () {
+      const response = yield* client.request("account/rateLimits/read", undefined);
+      yield* emitEvent({
+        kind: "notification",
+        threadId: options.threadId,
+        method: "account/rateLimits/updated",
+        payload: { rateLimits: response.rateLimits },
+      });
+    }).pipe(
+      Effect.timeoutOption("10 seconds"),
+      Effect.catch((cause) =>
+        Effect.logWarning("Failed to read Codex account rate limits.", { cause }),
+      ),
+    );
+
     const start = Effect.fn("CodexSessionRuntime.start")(function* () {
       yield* emitSessionEvent("session/connecting", "Starting Codex App Server session.");
       yield* client.request("initialize", buildCodexInitializeParams());
@@ -1709,6 +1732,7 @@ export const makeCodexSessionRuntime = (
       } satisfies ProviderSession;
       yield* Ref.set(sessionRef, session);
       yield* emitSessionEvent("session/ready", "Codex App Server session ready.");
+      yield* seedRateLimits;
       return session;
     });
 

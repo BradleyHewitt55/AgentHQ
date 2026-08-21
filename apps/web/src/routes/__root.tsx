@@ -143,7 +143,9 @@ function RootRouteView() {
         <HostedStaticEnvironmentBootstrap />
         {primaryEnvironmentAuthenticated ? <EventRouter /> : null}
         {primaryEnvironmentAuthenticated ? <ProviderUpdateLaunchNotification /> : null}
-        {primaryEnvironmentAuthenticated ? <SubscriptionUsagePillsHost /> : null}
+        {primaryEnvironmentAuthenticated || authGateState.status === "hosted-static" ? (
+          <SubscriptionUsagePillsHost />
+        ) : null}
         {appShell}
         {/* Above the router: a theme draft is judged by walking the app, so the
             editor has to survive navigation away from settings. */}

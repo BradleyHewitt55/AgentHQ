@@ -3,6 +3,7 @@ import { defineConfig } from "vite-plus";
 import * as NodeURL from "node:url";
 
 export default defineConfig({
+  server: process.env.T3CODE_DOCKER === "1" ? { host: "0.0.0.0" } : undefined,
   resolve: {
     alias: {
       "~": NodeURL.fileURLToPath(new URL("./apps/web/src", import.meta.url)),

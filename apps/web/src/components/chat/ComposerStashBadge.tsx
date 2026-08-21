@@ -17,6 +17,7 @@ export const ComposerStashBadge = memo(function ComposerStashBadge(props: {
   pulsing: boolean;
   menuOpen: boolean;
   onToggleMenu: () => void;
+  className?: string;
 }) {
   if (props.count === 0) return null;
 
@@ -32,6 +33,7 @@ export const ComposerStashBadge = memo(function ComposerStashBadge(props: {
         props.menuOpen || props.pulsing
           ? "border-border text-foreground opacity-100"
           : "border-border/70 text-muted-foreground opacity-70 hover:opacity-100 hover:text-foreground",
+        props.className,
       )}
       onPointerDown={(event) => {
         // Keep composer focus so Escape/typing flows stay intact.

@@ -59,6 +59,7 @@ type PiContext = {
   piSubagentIds: Set<string>;
   turns: Array<{ id: TurnId; items: unknown[] }>;
   abortInFlight: boolean;
+  turnError: string | undefined;
   stopped: boolean;
 };
 
@@ -131,6 +132,22 @@ const piSubagentResultText = (value: unknown) => {
   return value
     .map((entry) => asNonEmptyString(asRecord(entry)?.text))
     .find((text) => text !== undefined);
+};
+
+// Some Pi providers return the complete assistant message without emitting
+// text deltas. Preserve that response instead of leaving a submitted T3 turn
+// visibly empty.
+const piAssistantText = (value: unknown) => {
+  if (typeof value === "string") return value;
+  if (!Array.isArray(value)) return undefined;
+  const text = value
+    .flatMap((entry) => {
+      if (typeof entry === "string") return [entry];
+      const value = asNonEmptyString(asRecord(entry)?.text);
+      return value ? [value] : [];
+    })
+    .join("");
+  return text.length > 0 ? text : undefined;
 };
 
 /** The Pi SDK addresses models as `provider/id`; one parser for every call site. */
@@ -230,6 +247,7 @@ export const makePiAdapter = (
     const startTurn = (context: PiContext) => {
       const turnId = TurnId.make(NodeCrypto.randomUUID());
       context.activeTurnId = turnId;
+      context.turnError = undefined;
       context.turns.push({ id: turnId, items: [] });
       context.providerSession = {
         ...context.providerSession,
@@ -418,8 +436,39 @@ export const makePiAdapter = (
         context.toolItems.delete(event.toolCallId);
         return;
       }
-      if (event.type === "message_end" && event.message.role === "custom") {
-        if (event.message.customType === "subagent-result") {
+      if (event.type === "message_end") {
+        if (event.message.role === "assistant") {
+          // A failed Pi run does not reject `prompt()`: the agent loop catches
+          // the error and hands back an assistant message carrying
+          // `stopReason: "error"` and an empty body. Without reading it here an
+          // auth or transport failure settles as an empty *completed* turn and
+          // the thread renders nothing at all.
+          if (event.message.stopReason === "error") {
+            context.turnError = asNonEmptyString(event.message.errorMessage) ?? "Pi turn failed.";
+            emit(context, {
+              type: "runtime.error",
+              turnId: context.activeTurnId,
+              payload: { message: context.turnError, class: "provider_error" },
+              raw,
+            });
+          } else if (event.message.stopReason === "aborted") {
+            context.abortInFlight = true;
+          }
+          if (!context.assistantItemId) {
+            const text = piAssistantText(event.message.content);
+            if (text) {
+              context.assistantItemId = itemId();
+              emit(context, {
+                type: "content.delta",
+                turnId: context.activeTurnId,
+                itemId: context.assistantItemId,
+                payload: { streamKind: "assistant_text", delta: text },
+                raw,
+              });
+            }
+          }
+        }
+        if (event.message.role === "custom" && event.message.customType === "subagent-result") {
           const details = piSubagentDetails(event.message.details);
           if (details) {
             emitPiSubagent(context, details, piSubagentResultText(event.message.content));
@@ -457,11 +506,16 @@ export const makePiAdapter = (
           });
         }
         const stats = context.agent.getSessionStats();
+        const turnError = context.turnError;
         emit(context, {
           type: "turn.completed",
           turnId: context.activeTurnId,
           payload: {
-            state: context.abortInFlight ? "cancelled" : "completed",
+            // A run that errored must not settle as "completed": that is what
+            // left failed Pi turns invisible in the thread.
+            ...(turnError !== undefined
+              ? { state: "failed" as const, errorMessage: turnError }
+              : { state: context.abortInFlight ? ("cancelled" as const) : ("completed" as const) }),
             usage: stats.tokens,
             totalCostUsd: stats.cost,
           },
@@ -471,12 +525,14 @@ export const makePiAdapter = (
         context.assistantItemId = undefined;
         context.reasoningItemId = undefined;
         context.abortInFlight = false;
+        context.turnError = undefined;
         context.providerSession = {
           ...context.providerSession,
-          status: "ready",
+          status: turnError !== undefined ? "error" : "ready",
           activeTurnId: undefined,
           updatedAt: now(),
           resumeCursor: context.agent.sessionFile,
+          ...(turnError !== undefined ? { lastError: turnError } : {}),
         };
       }
     };
@@ -590,6 +646,7 @@ export const makePiAdapter = (
         piSubagentIds: new Set(),
         turns: [],
         abortInFlight: false,
+        turnError: undefined,
         stopped: false,
       };
       context.unsubscribe = result.session.subscribe((event) => handleEvent(context, event));
@@ -656,13 +713,17 @@ export const makePiAdapter = (
       const streaming = activeTurnId !== undefined;
       const turnId = activeTurnId ?? startTurn(context);
       const images = yield* buildImages(input);
-      const prompt = input.input?.trim();
-      // The Pi SDK throws when `prompt` is called mid-stream. A follow-up
-      // message is steered into the live agent loop instead and the work
-      // continues as the same turn, mirroring the Claude adapter's steer.
+      // An attachment-only turn is valid here, but the Pi SDK calls
+      // `text.startsWith("/")` before anything else — passing `undefined`
+      // throws a bare TypeError instead of sending the image.
+      const prompt = input.input?.trim() ?? "";
+      // The Pi SDK requires an explicit delivery mode mid-stream. Queue a
+      // follow-up so it runs after the active response instead of replacing it.
       const promptOptions: PromptOptions = {
         ...(images.length > 0 ? { images } : {}),
-        ...(streaming ? { streamingBehavior: "steer" as const } : {}),
+        // Keep the active response intact; Pi will run this as the next turn
+        // once it settles. This is what users expect from a follow-up.
+        ...(streaming ? { streamingBehavior: "followUp" as const } : {}),
       };
       yield* Effect.forkDetach(
         Effect.tryPromise({

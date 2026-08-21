@@ -139,7 +139,11 @@ it.layer(TestLayer, { excludeTestServices: true })("WorkspaceEntries", (it) => {
           kind: "directory",
           ignored: true,
         });
-        expect(entryByPath.get("build/output.js")).toBeUndefined();
+        expect(entryByPath.get("build/output.js")).toEqual({
+          path: "build/output.js",
+          kind: "file",
+          ignored: true,
+        });
         expect(entryByPath.get("src/debug.log")).toEqual({
           path: "src/debug.log",
           kind: "file",
@@ -168,6 +172,114 @@ it.layer(TestLayer, { excludeTestServices: true })("WorkspaceEntries", (it) => {
             expect.objectContaining({ path: "src/keep.ts" }),
           ]),
         );
+      }),
+    );
+
+    it.effect("keeps files inside fully-ignored directories visible and dimmed", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTempDir({
+          prefix: "t3code-workspace-list-nested-ignore-",
+          git: true,
+        });
+        yield* writeTextFile(cwd, ".gitignore", "dist/\n");
+        yield* writeTextFile(cwd, "dist/bundle.js", "x");
+        yield* writeTextFile(cwd, "dist/chunk.css", "y");
+        yield* writeTextFile(cwd, "dist/assets/nested.js", "z");
+        yield* writeTextFile(cwd, "src/keep.ts", "export {};");
+
+        const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
+        const result = yield* workspaceEntries.list({ cwd });
+        const entryByPath = new Map(result.entries.map((entry) => [entry.path, entry]));
+
+        expect(entryByPath.get("dist")).toEqual({ path: "dist", kind: "directory", ignored: true });
+        expect(entryByPath.get("dist/bundle.js")).toEqual({
+          path: "dist/bundle.js",
+          kind: "file",
+          ignored: true,
+        });
+        expect(entryByPath.get("dist/chunk.css")).toEqual({
+          path: "dist/chunk.css",
+          kind: "file",
+          ignored: true,
+        });
+        expect(entryByPath.get("dist/assets")).toEqual({
+          path: "dist/assets",
+          kind: "directory",
+          ignored: true,
+        });
+        expect(entryByPath.get("dist/assets/nested.js")).toEqual({
+          path: "dist/assets/nested.js",
+          kind: "file",
+          ignored: true,
+        });
+        expect(entryByPath.get("src/keep.ts")).toEqual({ path: "src/keep.ts", kind: "file" });
+      }),
+    );
+
+    it.effect("lists empty directories", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTempDir({ prefix: "t3code-workspace-list-empty-" });
+        yield* writeTextFile(cwd, "src/keep.ts", "export {};");
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        yield* fileSystem.makeDirectory(path.join(cwd, "docs/empty"), { recursive: true });
+        yield* fileSystem.makeDirectory(path.join(cwd, "src/empty"), { recursive: true });
+
+        const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
+        const result = yield* workspaceEntries.list({ cwd });
+
+        expect(result.entries).toEqual(
+          expect.arrayContaining([
+            { path: "docs/empty", kind: "directory" },
+            { path: "src/empty", kind: "directory" },
+            { path: "src/keep.ts", kind: "file" },
+          ]),
+        );
+      }),
+    );
+
+    it.effect("shows empty gitignored directories dimmed, not as plain empty folders", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTempDir({
+          prefix: "t3code-workspace-list-ignored-empty-",
+          git: true,
+        });
+        yield* writeTextFile(cwd, ".gitignore", "build/\n");
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        yield* fileSystem.makeDirectory(path.join(cwd, "build"), { recursive: true });
+        yield* fileSystem.makeDirectory(path.join(cwd, "docs/empty"), { recursive: true });
+        yield* writeTextFile(cwd, "src/keep.ts", "export {};");
+
+        const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
+        const result = yield* workspaceEntries.list({ cwd });
+        const entryByPath = new Map(result.entries.map((entry) => [entry.path, entry]));
+
+        expect(entryByPath.get("build")).toEqual({
+          path: "build",
+          kind: "directory",
+          ignored: true,
+        });
+        expect(entryByPath.get("docs/empty")).toEqual({ path: "docs/empty", kind: "directory" });
+        expect(entryByPath.get("src/keep.ts")).toEqual({ path: "src/keep.ts", kind: "file" });
+      }),
+    );
+
+    it.effect("hides hidden empty directories", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTempDir({ prefix: "t3code-workspace-list-hidden-empty-" });
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        yield* fileSystem.makeDirectory(path.join(cwd, ".hidden-empty"), { recursive: true });
+        yield* fileSystem.makeDirectory(path.join(cwd, "docs/empty"), { recursive: true });
+
+        const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
+        const result = yield* workspaceEntries.list({ cwd });
+
+        expect(result.entries).toEqual(
+          expect.arrayContaining([{ path: "docs/empty", kind: "directory" }]),
+        );
+        expect(result.entries.some((entry) => entry.path.startsWith(".hidden"))).toBe(false);
       }),
     );
   });

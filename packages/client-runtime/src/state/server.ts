@@ -718,6 +718,7 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:subscription-usage",
       tag: WS_METHODS.serverGetSubscriptionUsage,
       staleTimeMs: 30_000,
+      refreshIntervalMs: 5 * 60_000,
     }),
     configProjection,
     welcome: createEnvironmentRpcSubscriptionAtomFamily(runtime, {

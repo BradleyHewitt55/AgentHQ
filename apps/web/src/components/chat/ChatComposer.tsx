@@ -2757,7 +2757,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           ref={composerSurfaceRef}
           data-chat-composer-mobile-collapsed={isComposerCollapsedMobile ? "true" : "false"}
           className={cn(
-            "rounded-[20px] transition-[background-color] duration-200",
+            "relative rounded-[20px] transition-[background-color] duration-200",
             isDragOverComposer ? "bg-accent/45 ring-1 ring-primary/70" : null,
             projectSelectionRequired ? "opacity-75" : null,
             composerProviderState.composerSurfaceClassName,
@@ -2808,6 +2808,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 />
               </div>
             ) : null)}
+
+          {!isComposerCollapsedMobile && !hasComposerHeader ? (
+            <div className="absolute right-2.5 top-2.5 z-10">
+              <ComposerSendLockControl
+                locked={isPromptSendingLocked}
+                onToggle={() =>
+                  setComposerDraftSendLocked(composerDraftTarget, !isPromptSendingLocked)
+                }
+              />
+            </div>
+          ) : null}
 
           {isComposerCollapsedMobile && activePendingApproval ? (
             <div
@@ -2939,6 +2950,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               "relative px-3 pb-2 sm:px-4",
               hasComposerHeader ? "pt-2.5 sm:pt-3" : "pt-3.5 sm:pt-4",
               isComposerCollapsedMobile && "hidden",
+              !hasComposerHeader && "pe-9 sm:pe-9",
             )}
           >
             <ComposerStashBadge
@@ -2947,6 +2959,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               pulsing={stashPulse.active}
               menuOpen={isStashMenuOpen}
               onToggleMenu={toggleStashMenu}
+              {...(!hasComposerHeader ? { className: "right-16" } : {})}
             />
 
             {isStashMenuOpen && !composerMenuOpen && !isComposerApprovalState && (
@@ -3259,12 +3272,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                         {providerTraitsPicker}
                       </>
                     ) : null}
-                    <ComposerSendLockControl
-                      locked={isPromptSendingLocked}
-                      onToggle={() =>
-                        setComposerDraftSendLocked(composerDraftTarget, !isPromptSendingLocked)
-                      }
-                    />
                     <ComposerFooterModeControls
                       showInteractionModeToggle={composerProviderControls.showInteractionModeToggle}
                       interactionMode={interactionMode}

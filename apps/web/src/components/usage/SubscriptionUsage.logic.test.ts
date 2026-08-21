@@ -3,6 +3,7 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   formatSubscriptionPercent,
   formatSubscriptionReset,
+  formatSubscriptionUpdatedAt,
   subscriptionWindowLabel,
 } from "./SubscriptionUsage.logic";
 
@@ -21,5 +22,27 @@ describe("subscription usage formatting", () => {
     expect(
       subscriptionWindowLabel("weekly", { label: "Opus", usedPercent: 10, resetsAt: null }),
     ).toBe("Weekly · Opus");
+  });
+
+  it("labels a snapshot as stale once it stops tracking the account", () => {
+    const now = Date.parse("2026-08-16T12:00:00.000Z");
+    expect(formatSubscriptionUpdatedAt(null, now)).toBeNull();
+    expect(formatSubscriptionUpdatedAt("not-a-date", now)).toBeNull();
+    expect(formatSubscriptionUpdatedAt("2026-08-16T11:59:40.000Z", now)).toEqual({
+      text: "Updated just now",
+      isStale: false,
+    });
+    expect(formatSubscriptionUpdatedAt("2026-08-16T11:31:00.000Z", now)).toEqual({
+      text: "Updated 29m ago",
+      isStale: false,
+    });
+    expect(formatSubscriptionUpdatedAt("2026-08-16T09:00:00.000Z", now)).toEqual({
+      text: "Updated 3h ago",
+      isStale: true,
+    });
+    expect(formatSubscriptionUpdatedAt("2026-08-14T09:00:00.000Z", now)).toEqual({
+      text: "Updated 2d ago",
+      isStale: true,
+    });
   });
 });

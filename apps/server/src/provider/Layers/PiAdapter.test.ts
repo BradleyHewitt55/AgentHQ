@@ -45,6 +45,11 @@ const makeSession = (): FakeSession => {
       return () => listeners.delete(listener);
     },
     prompt: async (text, options) => {
+      // The real SDK calls `text.startsWith("/")` before anything else, so a
+      // non-string prompt is a TypeError there, not a silently accepted call.
+      if (typeof text !== "string") {
+        throw new TypeError("Cannot read properties of undefined (reading 'startsWith')");
+      }
       calls.push({ text, options });
       prompts.push(Promise.resolve());
     },
@@ -161,6 +166,91 @@ describe("PiAdapter turns", () => {
       expect(events.some((event) => event.type === "turn.started")).toBe(true);
       expect(events.some((event) => event.type === "turn.completed")).toBe(true);
       expect(result.turnId).toBeDefined();
+    }).pipe(Effect.provide(serverConfigLayer)),
+  );
+
+  it.effect("renders a completed Pi assistant message when no text delta was emitted", () =>
+    Effect.gen(function* () {
+      const adapter = yield* makeTestFixture();
+      yield* adapter.sendTurn({ threadId: THREAD_ID, input: "hello" });
+      const session = lastSession();
+      yield* waitForPromptCalls(session, 1);
+      yield* Effect.sync(() =>
+        session!.emit({
+          type: "message_end",
+          message: { role: "assistant", content: [{ type: "text", text: "Hello from Pi." }] },
+        }),
+      );
+      yield* Effect.sync(() => session!.emit({ type: "agent_settled" }));
+
+      const events = yield* drainTurn(adapter.streamEvents);
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: "content.delta",
+          payload: { streamKind: "assistant_text", delta: "Hello from Pi." },
+        }),
+      );
+    }).pipe(Effect.provide(serverConfigLayer)),
+  );
+
+  it.effect("surfaces a failed Pi run instead of settling it as an empty completed turn", () =>
+    Effect.gen(function* () {
+      const adapter = yield* makeTestFixture();
+      yield* adapter.sendTurn({ threadId: THREAD_ID, input: "testing the pi agent" });
+      const session = lastSession();
+      yield* waitForPromptCalls(session, 1);
+      // Pi's agent loop swallows a run failure and reports it as an assistant
+      // message with an empty body — `prompt()` itself resolves cleanly.
+      yield* Effect.sync(() =>
+        session!.emit({
+          type: "message_end",
+          message: {
+            role: "assistant",
+            content: [],
+            stopReason: "error",
+            errorMessage: "OAuth auth derivation failed for openai-codex",
+          },
+        }),
+      );
+      yield* Effect.sync(() => session!.emit({ type: "agent_settled" }));
+
+      const events = yield* drainTurn(adapter.streamEvents);
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: "runtime.error",
+          payload: {
+            message: "OAuth auth derivation failed for openai-codex",
+            class: "provider_error",
+          },
+        }),
+      );
+      const completed = events.find((event) => event.type === "turn.completed");
+      expect(completed?.payload).toMatchObject({
+        state: "failed",
+        errorMessage: "OAuth auth derivation failed for openai-codex",
+      });
+    }).pipe(Effect.provide(serverConfigLayer)),
+  );
+
+  it.effect("reports an aborted Pi run as a cancelled turn", () =>
+    Effect.gen(function* () {
+      const adapter = yield* makeTestFixture();
+      yield* adapter.sendTurn({ threadId: THREAD_ID, input: "hello" });
+      const session = lastSession();
+      yield* waitForPromptCalls(session, 1);
+      yield* Effect.sync(() =>
+        session!.emit({
+          type: "message_end",
+          message: { role: "assistant", content: [], stopReason: "aborted" },
+        }),
+      );
+      yield* Effect.sync(() => session!.emit({ type: "agent_settled" }));
+
+      const events = yield* drainTurn(adapter.streamEvents);
+      expect(events.some((event) => event.type === "runtime.error")).toBe(false);
+      expect(events.find((event) => event.type === "turn.completed")?.payload).toMatchObject({
+        state: "cancelled",
+      });
     }).pipe(Effect.provide(serverConfigLayer)),
   );
 
@@ -379,7 +469,7 @@ describe("PiAdapter turns", () => {
       yield* waitForPromptCalls(session, 2);
       expect(followUp.turnId).toBe(first.turnId);
       expect(session?.calls.map((call) => call.text)).toEqual(["first", "second"]);
-      expect(session?.calls[1]?.options).toMatchObject({ streamingBehavior: "steer" });
+      expect(session?.calls[1]?.options).toMatchObject({ streamingBehavior: "followUp" });
       yield* Effect.sync(() => session!.emit({ type: "agent_settled" }));
       const events = yield* drainTurn(adapter.streamEvents);
       expect(events.filter((event) => event.type === "turn.started")).toHaveLength(1);
@@ -401,7 +491,13 @@ describe("PiAdapter turns", () => {
         threadId: THREAD_ID,
         input: "What is this?",
         attachments: [
-          { id: attachmentId, name: "screenshot.png", mimeType: "image/png", type: "image" },
+          {
+            id: attachmentId,
+            name: "screenshot.png",
+            mimeType: "image/png",
+            type: "image",
+            sizeBytes: 3,
+          },
         ],
       });
       const session = lastSession();
@@ -419,6 +515,45 @@ describe("PiAdapter turns", () => {
     }).pipe(Effect.provide(serverConfigLayer)),
   );
 
+  it.effect("sends an attachment-only turn without a text prompt", () =>
+    Effect.gen(function* () {
+      const { attachmentsDir } = yield* ServerConfig;
+      const attachmentId = "pasted-22345678-1234-1234-1234-123456789abc";
+      const attachmentPath = NodePath.join(attachmentsDir, `${attachmentId}.png`);
+      yield* Effect.tryPromise(() =>
+        NodeFSP.mkdir(NodePath.dirname(attachmentPath), { recursive: true }),
+      );
+      yield* Effect.tryPromise(() => NodeFSP.writeFile(attachmentPath, Uint8Array.from([9, 8, 7])));
+      const adapter = yield* makeTestFixture();
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        attachments: [
+          {
+            id: attachmentId,
+            name: "pasted.png",
+            mimeType: "image/png",
+            type: "image",
+            sizeBytes: 3,
+          },
+        ],
+      });
+      const session = lastSession();
+      // The SDK rejects a non-string prompt, so the fake never records the
+      // call and this wait is what fails if the adapter regresses.
+      yield* waitForPromptCalls(session, 1);
+      expect(typeof session?.calls[0]?.text).toBe("string");
+      expect(session?.calls[0]?.options).toMatchObject({
+        images: [
+          {
+            type: "image",
+            data: Buffer.from([9, 8, 7]).toString("base64"),
+            mimeType: "image/png",
+          },
+        ],
+      });
+    }).pipe(Effect.provide(serverConfigLayer)),
+  );
+
   it.effect("fails a turn for an invalid attachment id", () =>
     Effect.gen(function* () {
       const adapter = yield* makeTestFixture();
@@ -426,7 +561,9 @@ describe("PiAdapter turns", () => {
         .sendTurn({
           threadId: THREAD_ID,
           input: "What is this?",
-          attachments: [{ id: "../evil", name: "x.png", mimeType: "image/png", type: "image" }],
+          attachments: [
+            { id: "../evil", name: "x.png", mimeType: "image/png", type: "image", sizeBytes: 3 },
+          ],
         })
         .pipe(Effect.flip);
       expect(error._tag).toBe("ProviderAdapterValidationError");

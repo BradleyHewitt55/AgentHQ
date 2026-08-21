@@ -10,5 +10,21 @@ type PiSdk = typeof import("@earendil-works/pi-coding-agent");
 
 let sdkPromise: Promise<PiSdk> | undefined;
 
+// pi-ai loads each OAuth flow (anthropic, openai-codex, ...) through a relative
+// dynamic `import()` resolved off that module's own `import.meta.url`, to keep
+// bundlers from following Node-only code (node:http, node:crypto) into browser
+// builds. That resolution breaks for pi-coding-agent's own standalone Bun
+// binary, which pi-ai works around via `registerBunOAuthFlows()` — eagerly
+// importing every flow up front so the lazy relative import is never taken.
+// The packaged Electron app hits the same class of failure (relative dynamic
+// imports resolved against an app.asar-based `import.meta.url`), surfacing as
+// an instant "OAuth auth derivation failed" with the real cause swallowed by
+// pi-ai's generic wrapper. Registering the same way here sidesteps it.
+const registerOAuthFlows = (): Promise<void> =>
+  import("@earendil-works/pi-ai/bun-oauth").then((mod) => mod.registerBunOAuthFlows());
+
 export const loadPiSdk = (): Promise<PiSdk> =>
-  (sdkPromise ??= import("@earendil-works/pi-coding-agent"));
+  (sdkPromise ??= Promise.all([
+    import("@earendil-works/pi-coding-agent"),
+    registerOAuthFlows(),
+  ]).then(([sdk]) => sdk));

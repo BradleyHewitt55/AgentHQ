@@ -88,8 +88,8 @@ const CLAUDE_MODEL_CATALOG: ReadonlyArray<ServerProviderModel> = [
           id: "contextWindow",
           label: "Context Window",
           options: [
-            { value: "200k", label: "200k" },
-            { value: "1m", label: "1M", isDefault: true },
+            { value: "200k", label: "200k", isDefault: true },
+            { value: "1m", label: "1M" },
           ],
         }),
       ],
@@ -124,8 +124,8 @@ const CLAUDE_MODEL_CATALOG: ReadonlyArray<ServerProviderModel> = [
           label: "Context Window",
           // Claude Code selects the 1M variant explicitly (`claude-opus-5[1m]`).
           options: [
-            { value: "200k", label: "200k" },
-            { value: "1m", label: "1M", isDefault: true },
+            { value: "200k", label: "200k", isDefault: true },
+            { value: "1m", label: "1M" },
           ],
         }),
       ],
@@ -155,6 +155,14 @@ const CLAUDE_MODEL_CATALOG: ReadonlyArray<ServerProviderModel> = [
           id: "fastMode",
           label: "Fast Mode",
         }),
+        buildSelectOptionDescriptor({
+          id: "contextWindow",
+          label: "Context Window",
+          options: [
+            { value: "200k", label: "200k", isDefault: true },
+            { value: "1m", label: "1M" },
+          ],
+        }),
       ],
     }),
   },
@@ -180,6 +188,14 @@ const CLAUDE_MODEL_CATALOG: ReadonlyArray<ServerProviderModel> = [
         buildBooleanOptionDescriptor({
           id: "fastMode",
           label: "Fast Mode",
+        }),
+        buildSelectOptionDescriptor({
+          id: "contextWindow",
+          label: "Context Window",
+          options: [
+            { value: "200k", label: "200k", isDefault: true },
+            { value: "1m", label: "1M" },
+          ],
         }),
       ],
     }),
@@ -210,8 +226,8 @@ const CLAUDE_MODEL_CATALOG: ReadonlyArray<ServerProviderModel> = [
           id: "contextWindow",
           label: "Context Window",
           options: [
-            { value: "200k", label: "200k" },
-            { value: "1m", label: "1M", isDefault: true },
+            { value: "200k", label: "200k", isDefault: true },
+            { value: "1m", label: "1M" },
           ],
         }),
       ],

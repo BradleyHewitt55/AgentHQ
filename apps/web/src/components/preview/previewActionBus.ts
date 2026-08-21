@@ -7,6 +7,7 @@
  */
 export type PreviewAction =
   | "toggle-panel"
+  | "open-chatgpt"
   | "refresh"
   | "focus-url"
   | "zoom-in"

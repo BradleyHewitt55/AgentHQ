@@ -4,6 +4,9 @@ Pin a thread from its context menu to keep it in the pinned section above your a
 Pinned threads are shown independently of their project, including when you connect to more than
 one environment.
 
+Use the ChatGPT button in the sidebar header while a thread is open to launch `chatgpt.com` in that
+thread's integrated browser panel.
+
 On web and desktop, drag a pinned thread to change its position. On mobile, open the thread's menu
 and choose **Move up** or **Move down**. The order is stored by the server and appears on your
 other connected devices.

@@ -2,6 +2,7 @@ import {
   ArrowLeftIcon,
   ChartNoAxesColumnIcon,
   GitPullRequestIcon,
+  MessageCircleIcon,
   SettingsIcon,
 } from "lucide-react";
 import { memo, useCallback } from "react";
@@ -30,6 +31,7 @@ import {
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { SidebarProviderUpdatePill } from "./SidebarProviderUpdatePill";
 import { SidebarUpdateArchitectureWarning, SidebarUpdatePill } from "./SidebarUpdatePill";
+import { dispatchPreviewAction } from "../preview/previewActionBus";
 
 export const SidebarChromeHeader = memo(function SidebarChromeHeader({
   isElectron,
@@ -74,6 +76,26 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
           {pillLabel}
         </Badge>
       ) : null}
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <button
+              type="button"
+              aria-label="Open ChatGPT"
+              className={cn(
+                "relative z-10 ml-auto flex size-7 shrink-0 items-center justify-center rounded-md outline-hidden transition-colors hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-ring",
+                backdropVariant
+                  ? "text-white/80 hover:text-white"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+              onClick={() => dispatchPreviewAction("open-chatgpt")}
+            >
+              <MessageCircleIcon className="size-4" />
+            </button>
+          }
+        />
+        <TooltipPopup side="bottom">Open ChatGPT in browser</TooltipPopup>
+      </Tooltip>
     </SidebarHeader>
   );
 });

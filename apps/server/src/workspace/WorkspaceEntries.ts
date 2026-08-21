@@ -143,7 +143,7 @@ const resolveBrowseTarget = Effect.fn("WorkspaceEntries.resolveBrowseTarget")(fu
 // Entries git reports as ignored (`git ls-files -oi --exclude-standard`).
 // Workspaces without a repository (or without git installed) yield nothing.
 const GIT_IGNORED_MAX_OUTPUT_BYTES = 20 * 1024 * 1024;
-const listGitIgnoredEntries = Effect.fn("WorkspaceEntries.listGitIgnoredEntries")(function* (
+const listGitIgnoredRoots = Effect.fn("WorkspaceEntries.listGitIgnoredRoots")(function* (
   cwd: string,
 ): Effect.fn.Return<ReadonlyArray<ProjectEntry>, never, VcsProcess.VcsProcess> {
   const vcsProcess = yield* VcsProcess.VcsProcess;
@@ -152,9 +152,9 @@ const listGitIgnoredEntries = Effect.fn("WorkspaceEntries.listGitIgnoredEntries"
       operation: "WorkspaceEntries.listGitIgnoredEntries",
       command: "git",
       cwd,
-      // --directory collapses fully-ignored directories to a single line, so
-      // the merge carries git's own notion of which paths are ignored instead
-      // of enumerating every file inside (trailing-slash paths mark dirs).
+      // Keep fully-ignored directories collapsed. Asking Git to enumerate
+      // every ignored file can exceed the output cap on ordinary dependency
+      // trees and used to make the entire ignored listing disappear.
       args: ["ls-files", "-oi", "--exclude-standard", "--directory", "-z"],
       allowNonZeroExit: true,
       timeoutMs: 20_000,
@@ -180,6 +180,99 @@ const listGitIgnoredEntries = Effect.fn("WorkspaceEntries.listGitIgnoredEntries"
     entries.push({ path, kind: isDirectory ? "directory" : "file", ignored: true });
   }
   return entries;
+});
+
+const MAX_IGNORED_TREE_ENTRIES = 100_000;
+
+/** Expands Git's collapsed ignored directories without another unbounded Git command. */
+const listIgnoredDirectoryContents = Effect.fn("WorkspaceEntries.listIgnoredDirectoryContents")(
+  function* (
+    cwd: string,
+    roots: ReadonlyArray<ProjectEntry>,
+    path: Path.Path,
+  ): Effect.fn.Return<ReadonlyArray<ProjectEntry>, never> {
+    const entries: ProjectEntry[] = [];
+
+    const walk = (absoluteDirectory: string, relativeDirectory: string): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        if (entries.length >= MAX_IGNORED_TREE_ENTRIES) return;
+        const dirents = yield* Effect.tryPromise(() =>
+          NodeFSP.readdir(absoluteDirectory, { withFileTypes: true }),
+        ).pipe(Effect.orElseSucceed(() => []));
+        for (const dirent of dirents) {
+          if (entries.length >= MAX_IGNORED_TREE_ENTRIES) return;
+          const relativePath = `${relativeDirectory}/${dirent.name}`;
+          const isDirectory = dirent.isDirectory();
+          entries.push({
+            path: relativePath,
+            kind: isDirectory ? "directory" : "file",
+            ignored: true,
+          });
+          if (isDirectory) {
+            yield* walk(path.join(absoluteDirectory, dirent.name), relativePath);
+          }
+        }
+      });
+
+    for (const root of roots) {
+      if (root.kind !== "directory" || entries.length >= MAX_IGNORED_TREE_ENTRIES) continue;
+      yield* walk(path.join(cwd, root.path), root.path);
+    }
+    return entries;
+  },
+);
+
+/**
+ * Directories with no children at all are absent from the file index, which
+ * tracks files. Walk the workspace once to find them so the tree can render
+ * them. Hidden directories (leading dot), symlinks, unreadable directories,
+ * and fully-ignored directories (supplied by the caller) are skipped; paths
+ * come back workspace-relative.
+ */
+const listEmptyDirectories = Effect.fn("WorkspaceEntries.listEmptyDirectories")(function* (
+  cwd: string,
+  ignoredDirectoryPaths: ReadonlySet<string>,
+  path: Path.Path,
+): Effect.fn.Return<ReadonlyArray<ProjectEntry>, never> {
+  const emptyDirectories: ProjectEntry[] = [];
+
+  const readDirents = (directory: string) =>
+    Effect.tryPromise({
+      try: () => NodeFSP.readdir(directory, { withFileTypes: true }),
+      catch: (cause) =>
+        new WorkspaceEntriesReadDirectoryError({
+          cwd,
+          partialPath: directory,
+          parentPath: directory,
+          cause,
+        }),
+    }).pipe(Effect.orElseSucceed(() => null));
+
+  const walk = (absoluteDirectory: string, relativeDirectory: string): Effect.Effect<void> =>
+    Effect.gen(function* () {
+      const dirents = yield* readDirents(absoluteDirectory);
+      if (dirents === null) return;
+      let hasVisibleChild = false;
+      for (const dirent of dirents) {
+        if (dirent.name.startsWith(".")) continue;
+        if (dirent.isFile() || !dirent.isDirectory()) {
+          hasVisibleChild = true;
+        } else {
+          const childRelative =
+            relativeDirectory === "" ? dirent.name : `${relativeDirectory}/${dirent.name}`;
+          hasVisibleChild = true;
+          if (!ignoredDirectoryPaths.has(childRelative)) {
+            yield* walk(path.join(absoluteDirectory, dirent.name), childRelative);
+          }
+        }
+      }
+      if (!hasVisibleChild && relativeDirectory !== "") {
+        emptyDirectories.push({ path: relativeDirectory, kind: "directory" });
+      }
+    });
+
+  yield* walk(cwd, "");
+  return emptyDirectories;
 });
 
 export const make = Effect.gen(function* () {
@@ -333,13 +426,28 @@ export const make = Effect.gen(function* () {
       // The path index excludes gitignored paths. Merge them back in, flagged
       // so the file tree can render them dimmed. No repo means no ignored
       // paths, so an empty merge leaves the indexed shape untouched.
-      const ignored = yield* listGitIgnoredEntries(normalizedCwd);
-      if (ignored.length === 0) {
-        return indexed;
-      }
+      const ignoredRoots = yield* listGitIgnoredRoots(normalizedCwd);
+      const ignoredContents = yield* listIgnoredDirectoryContents(
+        normalizedCwd,
+        ignoredRoots,
+        path,
+      );
       const merged = new Map(indexed.entries.map((entry) => [entry.path, entry]));
-      for (const entry of ignored) {
+      for (const entry of [...ignoredRoots, ...ignoredContents]) {
         merged.set(entry.path, entry);
+      }
+      const ignoredDirectoryPaths = new Set(
+        ignoredRoots.filter((entry) => entry.kind === "directory").map((entry) => entry.path),
+      );
+      const emptyDirectories = yield* listEmptyDirectories(
+        normalizedCwd,
+        ignoredDirectoryPaths,
+        path,
+      );
+      for (const entry of emptyDirectories) {
+        if (!merged.has(entry.path)) {
+          merged.set(entry.path, entry);
+        }
       }
       return {
         entries: WorkspaceSearchIndex.withDirectoryAncestors([...merged.values()]).toSorted(

@@ -5,6 +5,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   buildTaskHandoffPrompt,
+  buildTaskHandoffPromptBatch,
   canPromoteTask,
   countTasksByStatus,
   selectRunningTasks,
@@ -138,6 +139,43 @@ describe("buildTaskHandoffPrompt", () => {
   it("omits an empty body", () => {
     expect(buildTaskHandoffPrompt(makeTask({ body: "   " }))).toBe(
       "Work on this task: Fix the login redirect",
+    );
+  });
+});
+
+describe("buildTaskHandoffPromptBatch", () => {
+  it("returns an empty prompt for no tasks", () => {
+    expect(buildTaskHandoffPromptBatch([])).toBe("");
+  });
+
+  it("falls back to the single-task prompt for one task", () => {
+    const task = makeTask({ body: "The redirect drops the query string." });
+    expect(buildTaskHandoffPromptBatch([task])).toBe(buildTaskHandoffPrompt(task));
+  });
+
+  it("numbers each task and keeps bodies and issue references", () => {
+    const prompt = buildTaskHandoffPromptBatch([
+      makeTask({ taskId: TaskId.make("task-1"), title: "Fix the redirect", body: "Loses query." }),
+      makeTask({
+        taskId: TaskId.make("task-2"),
+        title: "Ship the banner",
+        kind: "issue",
+        github: LINKED_GITHUB,
+      }),
+    ]);
+
+    expect(prompt).toBe(
+      [
+        "Work on these tasks:",
+        "",
+        "1. Fix the redirect",
+        "",
+        "Loses query.",
+        "",
+        "2. Ship the banner (#42)",
+        "",
+        "GitHub issue: https://github.com/acme/widgets/issues/42",
+      ].join("\n"),
     );
   });
 });
