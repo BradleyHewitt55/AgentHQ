@@ -21,7 +21,7 @@ import { SshPasswordPromptDialog } from "../components/desktop/SshPasswordPrompt
 import { ProviderUpdateLaunchNotification } from "../components/ProviderUpdateLaunchNotification";
 import { SlowRpcRequestToastCoordinator } from "../components/SlowRpcRequestToastCoordinator";
 import { ThemeEditorHost } from "../components/settings/ThemeEditorHost";
-import { SubscriptionUsagePills } from "../components/usage/SubscriptionUsage";
+import { UsageLimitsPills } from "../components/usage/UsageLimits";
 import { Button } from "../components/ui/button";
 import {
   AnchoredToastProvider,
@@ -47,7 +47,7 @@ import { shellEnvironment } from "../state/shell";
 import { useAtomValue } from "@effect/atom-react";
 import { useAtomCommand } from "../state/use-atom-command";
 import { useEnvironments, usePrimaryEnvironment } from "../state/environments";
-import { useSubscriptionUsage } from "../state/subscriptionUsage";
+import { useUsageLimits } from "../state/usageLimits";
 import {
   primaryServerConfigAtom,
   primaryServerConfigEventAtom,
@@ -146,7 +146,7 @@ function RootRouteView() {
         {primaryEnvironmentAuthenticated ? <PlanAgentSelectionHeal /> : null}
         {primaryEnvironmentAuthenticated ? <ProviderUpdateLaunchNotification /> : null}
         {primaryEnvironmentAuthenticated || authGateState.status === "hosted-static" ? (
-          <SubscriptionUsagePillsHost />
+          <UsageLimitsPillsHost />
         ) : null}
         {appShell}
         {/* Above the router: a theme draft is judged by walking the app, so the
@@ -157,8 +157,8 @@ function RootRouteView() {
   );
 }
 
-function SubscriptionUsagePillsHost() {
-  return <SubscriptionUsagePills {...useSubscriptionUsage()} />;
+function UsageLimitsPillsHost() {
+  return <UsageLimitsPills {...useUsageLimits()} />;
 }
 
 function GlassAppearanceSync() {

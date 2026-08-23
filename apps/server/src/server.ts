@@ -112,6 +112,8 @@ import * as ResourceAttribution from "./resourceTelemetry/ResourceAttribution.ts
 import * as ResourceMonitorBinary from "./resourceTelemetry/ResourceMonitorBinary.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import * as UsageService from "./usage/UsageService.ts";
+import * as UsageLimitsService from "./rateLimits/UsageLimitsService.ts";
+import * as ProviderService from "./provider/Services/ProviderService.ts";
 import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
 import {
   clearPersistedServerRuntimeState,
@@ -381,7 +383,16 @@ const ProviderRuntimeLayerLive = ProviderSessionReaperLive.pipe(
   Layer.provideMerge(OrchestrationLayerLive),
 );
 
-const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
+// Self-contained usage-limits wiring: BackgroundPolicy/settings are provided
+// explicitly, and the live ProviderService arrives from the ProviderRuntime
+// merge earlier in this same core pipe — so nothing leaks into the runtime's
+// final requirements.
+const UsageLimitsLayerLive = UsageLimitsService.layer.pipe(
+  Layer.provide(BackgroundLayerLive),
+  Layer.provide(ServerSettingsLayerLive),
+);
+
+const RuntimeCoreServicesLive = ReactorLayerLive.pipe(
   // Core Services
   Layer.provideMerge(ServerSettingsLayerLive),
   Layer.provideMerge(CheckpointingLayerLive),
@@ -389,9 +400,13 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   Layer.provideMerge(GitLayerLive),
   Layer.provideMerge(Layer.mergeAll(VcsLayerLive, ProjectTaskLayerLive)),
   Layer.provideMerge(ProviderRuntimeLayerLive),
+  Layer.provideMerge(UsageLimitsLayerLive),
   Layer.provideMerge(Layer.mergeAll(TerminalLayerLive, PreviewLayerLive)),
   Layer.provideMerge(PersistenceLayerLive),
   Layer.provideMerge(Keybindings.layer),
+);
+
+const RuntimeCoreDependenciesLive = RuntimeCoreServicesLive.pipe(
   Layer.provideMerge(ProviderRegistryLive),
   // The instance registry is the new routing keystone — text generation,
   // adapter lookup, and runtime ingestion all resolve `ProviderInstanceId`
@@ -431,6 +446,8 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
 const RuntimeDependenciesLive = RuntimeCoreDependenciesLive.pipe(
   // Misc.
   Layer.provideMerge(BackgroundLayerLive),
+  // Consumes BackgroundPolicy (just above), settings (core) and the shared
+  // live ProviderService (core) purely from the environment.
   Layer.provideMerge(ResourceDiagnosticsLayerLive),
   Layer.provideMerge(UsageLayerLive),
   Layer.provideMerge(TraceDiagnostics.layer),
@@ -683,6 +700,15 @@ export const makeServerLayer = Layer.unwrap(
       runtimeStateLayer,
       tailscaleServeLayer,
       cloudDesiredLinkReconcileLayer,
+      // Bridges live provider runtime events into the usage-limits service
+      // once the full dependency tree (ProviderService included) is up.
+      Layer.effectDiscard(
+        Effect.gen(function* () {
+          const limits = yield* UsageLimitsService.UsageLimitsService;
+          const providers = yield* ProviderService.ProviderService;
+          yield* limits.attachEventStream(providers.streamEvents);
+        }),
+      ),
     );
 
     return serverApplicationLayer.pipe(

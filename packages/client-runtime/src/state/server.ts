@@ -702,6 +702,11 @@ export function createServerEnvironmentAtoms<R, E>(
       tag: WS_METHODS.subscribeResourceTelemetry,
       idleTtlMs: 0,
     }),
+    usageLimits: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:server:usage-limits",
+      tag: WS_METHODS.serverSubscribeUsageLimits,
+      idleTtlMs: 0,
+    }),
     resourceTelemetryHistory: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:server:resource-telemetry-history",
       tag: WS_METHODS.serverGetResourceTelemetryHistory,
@@ -732,6 +737,14 @@ export function createServerEnvironmentAtoms<R, E>(
     refreshProviders: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:refresh-providers",
       tag: WS_METHODS.serverRefreshProviders,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId }) => environmentId,
+      },
+    }),
+    refreshUsageLimits: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:refresh-usage-limits",
+      tag: WS_METHODS.serverRefreshUsageLimits,
       concurrency: {
         mode: "singleFlight",
         key: ({ environmentId }) => environmentId,

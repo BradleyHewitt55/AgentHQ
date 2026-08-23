@@ -153,6 +153,7 @@ import * as NativeTelemetryClient from "./resourceTelemetry/NativeTelemetryClien
 import * as ResourceAttribution from "./resourceTelemetry/ResourceAttribution.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import * as UsageService from "./usage/UsageService.ts";
+import * as UsageLimitsService from "./rateLimits/UsageLimitsService.ts";
 import * as ProviderService from "./provider/Services/ProviderService.ts";
 import * as Data from "effect/Data";
 
@@ -844,6 +845,21 @@ const buildAppUnderTest = (options?: {
     const appLayer = servedRoutesLayer.pipe(
       Layer.provide(resourceTelemetryLayer),
       Layer.provide(UsageService.layerTest),
+      Layer.provide(
+        Layer.mock(UsageLimitsService.UsageLimitsService)({
+          getState: Effect.succeed({ readAt: "1970-01-01T00:00:00.000Z", providers: [] }),
+          refresh: () => Effect.succeed({ readAt: "1970-01-01T00:00:00.000Z", providers: [] }),
+          refreshIfStale: Effect.succeed({
+            readAt: "1970-01-01T00:00:00.000Z",
+            providers: [],
+          }),
+          attachEventStream: () => Effect.void,
+          subscribe: Effect.succeed({
+            latest: { readAt: "1970-01-01T00:00:00.000Z", providers: [] },
+            changes: Stream.empty,
+          }),
+        }),
+      ),
       Layer.provide(
         Layer.mock(ProviderService.ProviderService)({
           getSubscriptionUsage: Effect.succeed({

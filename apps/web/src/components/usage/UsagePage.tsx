@@ -1,6 +1,6 @@
 import type { UsageProviderKind } from "@t3tools/contracts";
 import { CheckIcon, RefreshCwIcon, XIcon } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 
 import type { DailyTotals, HourlyTotals } from "@t3tools/shared/usageMerge";
 
@@ -33,8 +33,10 @@ import { WorkspacePageContainer } from "../WorkspacePageContainer";
 import { WorkspacePageHeader } from "../WorkspacePageHeader";
 import { UsageProviderChart, type UsageChartMetric } from "./UsageProviderChart";
 import { PROVIDER_ORDER, PROVIDER_PRESENTATION } from "./usageProviders";
-import { useSubscriptionUsage } from "../../state/subscriptionUsage";
-import { SubscriptionUsageSection } from "./SubscriptionUsage";
+import { useUsageLimits } from "../../state/usageLimits";
+import { UsageLimitsSection } from "./UsageLimits";
+import { useAtomCommand } from "../../state/use-atom-command";
+import { serverEnvironment } from "../../state/server";
 import { ChatTokenUsageSection } from "./ChatTokenUsage";
 
 const WINDOW_OPTIONS = [
@@ -54,7 +56,7 @@ export function UsagePage() {
   const { days: windowDays, window } = windowSelection;
   const isPast24Hours = windowDays === 1;
   const { merged, environments, isPending, isPartial, refresh } = useUsage(window);
-  const subscriptionUsage = useSubscriptionUsage();
+  const usageLimits = useUsageLimits();
 
   // Hold the content until every environment is terminal. Rendering merged
   // totals while devices are still answering makes every number on the page
@@ -214,8 +216,10 @@ export function UsagePage() {
                   staleEnvironments={merged.staleEnvironments}
                 />
 
-                <SubscriptionUsageSection {...subscriptionUsage} />
-
+                <SubscriptionUsageSectionHost
+                  environments={usageLimits.environments}
+                  isPending={usageLimits.isPending}
+                />
                 <ChatTokenUsageSection
                   merged={merged}
                   environments={environments}
@@ -623,5 +627,38 @@ function UsageSkeleton() {
         </div>
       </section>
     </>
+  );
+}
+
+/**
+ * Wires the manual usage-limits refresh command into the shared section. The
+ * server coalesces refreshes centrally, so this only ever triggers one cycle.
+ */
+function SubscriptionUsageSectionHost({
+  environments,
+  isPending,
+}: {
+  readonly environments: ReturnType<typeof useUsageLimits>["environments"];
+  readonly isPending: boolean;
+}) {
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const refreshUsageLimits = useAtomCommand(serverEnvironment.refreshUsageLimits, {
+    reportFailure: false,
+  });
+  const onRefresh = useCallback(() => {
+    setIsRefreshing(true);
+    void Promise.all(
+      environments.map((environment) =>
+        refreshUsageLimits({ environmentId: environment.environmentId, input: {} }),
+      ),
+    ).finally(() => setIsRefreshing(false));
+  }, [environments, refreshUsageLimits]);
+  return (
+    <UsageLimitsSection
+      environments={environments}
+      isPending={isPending}
+      onRefresh={onRefresh}
+      isRefreshing={isRefreshing}
+    />
   );
 }

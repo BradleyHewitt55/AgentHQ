@@ -633,6 +633,17 @@ export const BackgroundActivitySettings = Schema.Struct({
 }).pipe(Schema.withDecodingDefault(Effect.succeed({})));
 export type BackgroundActivitySettings = typeof BackgroundActivitySettings.Type;
 
+/**
+ * Usage-limit polling settings. Reading Gemini CLI OAuth credentials is
+ * opt-in: the credential file is shared with other tooling, so background
+ * quota reads (and the application-owned token refresh they may perform) only
+ * happen when the user enables them.
+ */
+export const UsageLimitsSettings = Schema.Struct({
+  geminiCliOauthEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+}).pipe(Schema.withDecodingDefault(Effect.succeed({})));
+export type UsageLimitsSettings = typeof UsageLimitsSettings.Type;
+
 export const ServerSettings = Schema.Struct({
   // Legacy token-by-token assistant output. Deliberately a fresh key (was
   // `enableAssistantStreaming`): decoding drops the old key, so everyone,
@@ -654,6 +665,7 @@ export const ServerSettings = Schema.Struct({
    */
   enableAgentBrowserAccess: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   backgroundActivity: BackgroundActivitySettings,
+  usageLimits: UsageLimitsSettings,
   // Legacy flat fields retained for old settings files and old clients. New
   // consumers should resolve `backgroundActivity` instead.
   automaticGitFetchInterval: Schema.DurationFromMillis.pipe(
@@ -881,6 +893,11 @@ export const ServerSettingsPatch = Schema.Struct({
       profile: Schema.optionalKey(BackgroundActivityProfileSelection),
       baseProfile: Schema.optionalKey(BackgroundActivityProfile),
       overrides: Schema.optionalKey(BackgroundActivityOverrides),
+    }),
+  ),
+  usageLimits: Schema.optionalKey(
+    Schema.Struct({
+      geminiCliOauthEnabled: Schema.optionalKey(Schema.Boolean),
     }),
   ),
   automaticGitFetchInterval: Schema.optionalKey(Schema.DurationFromMillis),

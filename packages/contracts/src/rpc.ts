@@ -210,6 +210,7 @@ import {
   UsageSummary,
   UsageSummaryInput,
 } from "./usage.ts";
+import { UsageLimitsRefreshInput, UsageLimitsSnapshot } from "./rateLimits.ts";
 import { ServerSettings, ServerSettingsError, ServerSettingsPatch } from "./settings.ts";
 import {
   SourceControlCloneRepositoryInput,
@@ -317,6 +318,9 @@ export const WS_METHODS = {
   serverGetBackgroundPolicy: "server.getBackgroundPolicy",
   serverGetUsageSummary: "server.getUsageSummary",
   serverGetSubscriptionUsage: "server.getSubscriptionUsage",
+  serverGetUsageLimits: "server.getUsageLimits",
+  serverSubscribeUsageLimits: "server.subscribeUsageLimits",
+  serverRefreshUsageLimits: "server.refreshUsageLimits",
 
   // Cloud environment methods
   cloudGetRelayClientStatus: "cloud.getRelayClientStatus",
@@ -482,6 +486,25 @@ export const WsServerGetUsageSummaryRpc = Rpc.make(WS_METHODS.serverGetUsageSumm
 export const WsServerGetSubscriptionUsageRpc = Rpc.make(WS_METHODS.serverGetSubscriptionUsage, {
   payload: Schema.Struct({}),
   success: SubscriptionUsageSummary,
+  error: EnvironmentAuthorizationError,
+});
+
+export const WsServerGetUsageLimitsRpc = Rpc.make(WS_METHODS.serverGetUsageLimits, {
+  payload: Schema.Struct({}),
+  success: UsageLimitsSnapshot,
+  error: EnvironmentAuthorizationError,
+});
+
+export const WsServerSubscribeUsageLimitsRpc = Rpc.make(WS_METHODS.serverSubscribeUsageLimits, {
+  payload: Schema.Struct({}),
+  success: UsageLimitsSnapshot,
+  error: EnvironmentAuthorizationError,
+  stream: true,
+});
+
+export const WsServerRefreshUsageLimitsRpc = Rpc.make(WS_METHODS.serverRefreshUsageLimits, {
+  payload: UsageLimitsRefreshInput,
+  success: UsageLimitsSnapshot,
   error: EnvironmentAuthorizationError,
 });
 
@@ -1118,6 +1141,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerRetryResourceTelemetryRpc,
   WsServerGetUsageSummaryRpc,
   WsServerGetSubscriptionUsageRpc,
+  WsServerGetUsageLimitsRpc,
+  WsServerSubscribeUsageLimitsRpc,
+  WsServerRefreshUsageLimitsRpc,
   WsServerSignalProcessRpc,
   WsServerReportClientActivityRpc,
   WsServerReportHostPowerStateRpc,
