@@ -3,55 +3,87 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   clampCollapsedComposerCursor,
   collapseExpandedComposerCursor,
+  composerSubmissionIntentForEnter,
   detectComposerTrigger,
   expandCollapsedComposerCursor,
   extendComposerTriggerReplacementRange,
   isCollapsedCursorAdjacentToInlineToken,
   parseStandaloneComposerSlashCommand,
   replaceTextRange,
-  shouldSubmitComposerOnEnter,
 } from "./composer-logic";
 import { INLINE_TERMINAL_CONTEXT_PLACEHOLDER } from "./lib/terminalContext";
 
-describe("shouldSubmitComposerOnEnter", () => {
+describe("composerSubmissionIntentForEnter", () => {
   it("submits plain Enter on desktop", () => {
     expect(
-      shouldSubmitComposerOnEnter({
+      composerSubmissionIntentForEnter({
         isMobileViewport: false,
         isSendLocked: false,
         shiftKey: false,
+        modifierKey: false,
+        isDraftThread: true,
       }),
-    ).toBe(true);
+    ).toBe("foreground");
   });
 
   it("inserts a newline for plain Enter on mobile", () => {
     expect(
-      shouldSubmitComposerOnEnter({
+      composerSubmissionIntentForEnter({
         isMobileViewport: true,
         isSendLocked: false,
         shiftKey: false,
+        modifierKey: false,
+        isDraftThread: true,
       }),
-    ).toBe(false);
+    ).toBeNull();
   });
 
   it("inserts a newline for Shift+Enter", () => {
     expect(
-      shouldSubmitComposerOnEnter({
+      composerSubmissionIntentForEnter({
         isMobileViewport: false,
         isSendLocked: false,
         shiftKey: true,
+        modifierKey: false,
+        isDraftThread: true,
       }),
-    ).toBe(false);
+    ).toBeNull();
   });
 
   it("inserts a newline for Enter while sending is locked", () => {
     expect(
-      shouldSubmitComposerOnEnter({
+      composerSubmissionIntentForEnter({
         isMobileViewport: false,
         isSendLocked: true,
         shiftKey: false,
+        modifierKey: false,
+        isDraftThread: true,
       }),
-    ).toBe(false);
+    ).toBeNull();
+  });
+
+  it("submits a new thread in the background with Mod+Enter", () => {
+    expect(
+      composerSubmissionIntentForEnter({
+        isMobileViewport: false,
+        isSendLocked: false,
+        shiftKey: false,
+        modifierKey: true,
+        isDraftThread: true,
+      }),
+    ).toBe("background");
+  });
+
+  it("keeps Mod+Enter in the foreground for an active thread", () => {
+    expect(
+      composerSubmissionIntentForEnter({
+        isMobileViewport: false,
+        isSendLocked: false,
+        shiftKey: false,
+        modifierKey: true,
+        isDraftThread: false,
+      }),
+    ).toBe("foreground");
   });
 });
 
