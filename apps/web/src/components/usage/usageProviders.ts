@@ -35,6 +35,24 @@ export const PROVIDER_PRESENTATION = {
 /** Stable provider reading order across charts, summaries, tables, and hover rows. */
 export const PROVIDER_ORDER = Object.keys(PROVIDER_PRESENTATION) as UsageProviderKind[];
 
+export const PROVIDER_LABEL = {
+  codex: PROVIDER_PRESENTATION.codex.label,
+  claude: PROVIDER_PRESENTATION.claude.label,
+  grok: PROVIDER_PRESENTATION.grok.label,
+} satisfies Record<UsageProviderKind, string>;
+
+export const PROVIDER_COLOR = {
+  codex: PROVIDER_PRESENTATION.codex.color,
+  claude: PROVIDER_PRESENTATION.claude.color,
+  grok: PROVIDER_PRESENTATION.grok.color,
+} satisfies Record<UsageProviderKind, string>;
+
+export const PROVIDER_MARK = {
+  codex: PROVIDER_PRESENTATION.codex.mark,
+  claude: PROVIDER_PRESENTATION.claude.mark,
+  grok: PROVIDER_PRESENTATION.grok.mark,
+} satisfies Record<UsageProviderKind, Icon>;
+
 /** Providers with real activity, independent of the metric currently displayed. */
 export function providersWithUsage(
   totals: readonly {
