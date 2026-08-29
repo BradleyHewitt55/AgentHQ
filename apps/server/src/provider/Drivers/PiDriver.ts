@@ -55,14 +55,14 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
       const discoverModels = Effect.tryPromise({
         try: async () => {
           const { ModelRuntime } = await loadPiSdk();
-          const modelRuntime = await ModelRuntime.create({
-            ...(agentDir
+          const modelRuntime = await ModelRuntime.create(
+            agentDir
               ? {
                   authPath: joinPath(agentDir, "auth.json"),
                   modelsPath: joinPath(agentDir, "models.json"),
                 }
-              : {}),
-          });
+              : {},
+          );
           return (await modelRuntime.getAvailable()) as ReadonlyArray<PiAvailableModel>;
         },
         catch: (cause) =>

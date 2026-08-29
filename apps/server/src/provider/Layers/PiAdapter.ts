@@ -636,14 +636,14 @@ export const makePiAdapter = (
       });
       const modelRuntime = yield* Effect.tryPromise({
         try: () =>
-          ModelRuntime.create({
-            ...(agentDir
+          ModelRuntime.create(
+            agentDir
               ? {
                   authPath: joinPath(agentDir, "auth.json"),
                   modelsPath: joinPath(agentDir, "models.json"),
                 }
-              : {}),
-          }),
+              : {},
+          ),
         catch: (cause) =>
           new ProviderAdapterRequestError({
             provider: PROVIDER,
