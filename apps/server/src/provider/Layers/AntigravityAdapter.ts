@@ -72,6 +72,7 @@ export const makeAntigravityAdapter = (
 > =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const { attachmentsDir } = yield* ServerConfig;
     const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
     const sessions = new Map<ThreadId, AntigravityContext>();
     const binaryPath = settings.binaryPath.trim() || "agy";
@@ -84,7 +85,6 @@ export const makeAntigravityAdapter = (
      */
     const buildImageRefs = (input: ProviderSendTurnInput) =>
       Effect.gen(function* () {
-        const { attachmentsDir } = yield* ServerConfig;
         const refs: string[] = [];
         for (const attachment of input.attachments ?? []) {
           const attachmentPath = resolveAttachmentPath({ attachmentsDir, attachment });

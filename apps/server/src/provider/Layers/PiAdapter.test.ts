@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off globalDateInEffect:off globalErrorInEffectFailure:off anyUnknownInErrorContext:off
 import { vi } from "vite-plus/test";
 import { describe, expect, it } from "@effect/vitest";
 import * as NodeFSP from "node:fs/promises";
@@ -115,7 +116,11 @@ const makeTestFixture = () =>
       { enabled: true, agentDir: "", customModels: [] },
       { instanceId: INSTANCE_ID },
     );
-    yield* adapter.startSession({ threadId: THREAD_ID, cwd: "/workspace" });
+    yield* adapter.startSession({
+      threadId: THREAD_ID,
+      cwd: "/workspace",
+      runtimeMode: "full-access",
+    });
     return adapter;
   }).pipe(Effect.provide(serverConfigLayer));
 
@@ -299,7 +304,7 @@ describe("PiAdapter turns", () => {
               activeFiles: ["src/stale.ts"],
               changedFiles: ["src/runtime.ts"],
             },
-            timestamp: Date.now(),
+            timestamp: 0,
           },
         }),
       );

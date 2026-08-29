@@ -237,9 +237,11 @@ export const layer = Layer.effect(
           (event) =>
             event.type === "account.rate-limits.updated"
               ? Effect.sync(() => {
+                  const provider = event.payload.rateLimits.provider;
+                  if (provider !== "claude" && provider !== "codex") return;
                   const live = liveWindowsFromRateLimitsUpdate(event.payload.rateLimits);
                   if (live.session || live.weekly) {
-                    coordinator.ingestLiveUpdate(event.payload.rateLimits.provider, live);
+                    coordinator.ingestLiveUpdate(provider, live);
                   }
                 })
               : Effect.void,
@@ -265,6 +267,18 @@ export const layer = Layer.effect(
           },
         ] as const) {
           if (!entry.changed) continue;
+          if (entry.provider === "antigravity") {
+            // Antigravity is aggregated via geminiCliOauth, refresh via direct coordinator refresh
+            yield* Effect.tryPromise({
+              try: () => coordinator.refresh(entry.provider).then(() => undefined),
+              catch: (cause) => new UsageLimitsRefreshError({ cause }),
+            }).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("Usage-limits credential-change refresh failed", { cause }),
+              ),
+            );
+            continue;
+          }
           yield* Effect.tryPromise({
             try: () =>
               coordinator

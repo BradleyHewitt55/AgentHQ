@@ -2364,6 +2364,16 @@ function ChatViewContent(props: ChatViewProps) {
     () => deriveActivePlanState(threadActivities, activeLatestTurn?.turnId ?? undefined),
     [activeLatestTurn?.turnId, threadActivities],
   );
+  const workingStepLabel = useMemo(() => {
+    if (!activePlan || activePlan.turnId !== (activeLatestTurn?.turnId ?? null)) {
+      return null;
+    }
+    return (
+      activePlan.steps.find((step) => step.status === "inProgress")?.step ??
+      activePlan.steps.find((step) => step.status === "pending")?.step ??
+      null
+    );
+  }, [activeLatestTurn?.turnId, activePlan]);
   const planSidebarLabel = sidebarProposedPlan || interactionMode === "plan" ? "Plan" : "Tasks";
   const showPlanFollowUpPrompt =
     pendingUserInputs.length === 0 &&

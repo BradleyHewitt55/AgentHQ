@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off
 import { describe, expect, it } from "@effect/vitest";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
@@ -242,7 +243,13 @@ describe("AntigravityAdapter argv", () => {
         threadId: THREAD_ID,
         input: "What color?",
         attachments: [
-          { id: attachmentId, name: "screenshot.png", mimeType: "image/png", type: "image" },
+          {
+            id: attachmentId,
+            name: "screenshot.png",
+            mimeType: "image/png",
+            type: "image",
+            sizeBytes: 3,
+          },
         ],
       });
       yield* drainTurn(adapter.streamEvents);
@@ -269,7 +276,9 @@ describe("AntigravityAdapter argv", () => {
         .sendTurn({
           threadId: THREAD_ID,
           input: "What color?",
-          attachments: [{ id: "../evil", name: "x.png", mimeType: "image/png", type: "image" }],
+          attachments: [
+            { id: "../evil", name: "x.png", mimeType: "image/png", type: "image", sizeBytes: 3 },
+          ],
         })
         .pipe(Effect.flip);
       expect(error._tag).toBe("ProviderAdapterValidationError");

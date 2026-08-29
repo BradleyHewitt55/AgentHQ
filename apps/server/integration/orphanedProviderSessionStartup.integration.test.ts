@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   CommandId,
@@ -115,6 +116,11 @@ const startupDependencies = Layer.mergeAll(
     listSessions: () => Effect.succeed([]),
     getCapabilities: () => Effect.die("unused"),
     getInstanceInfo: () => Effect.die("unused"),
+    getSubscriptionUsage: Effect.succeed({
+      // eslint-disable-next-line @effect-diagnostics/globalDateInEffect -- test fixture timestamp
+      readAt: new globalThis.Date().toISOString(),
+      providers: [],
+    }),
     rollbackConversation: () => Effect.die("unused"),
     uploadFeedback: () => Effect.die("unused"),
     streamEvents: Stream.empty,

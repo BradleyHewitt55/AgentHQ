@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDateInEffect:off
 import { describe, expect, it } from "@effect/vitest";
 import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -5,10 +6,16 @@ import * as Layer from "effect/Layer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 
+import { ServerConfig } from "../../config.ts";
+
 import { BUILT_IN_DRIVERS } from "../builtInDrivers.ts";
 import { AntigravityDriver } from "./AntigravityDriver.ts";
 
 const noopSpawner = ChildProcessSpawner.make(() => Effect.die("spawn is not expected"));
+
+const serverConfigLayer = ServerConfig.layerTest(process.cwd(), {
+  prefix: "t3-antigravity-driver-test-",
+}).pipe(Layer.provideMerge(NodeServices.layer));
 
 const createInstance = (config: Parameters<typeof AntigravityDriver.create>[0]["config"]) =>
   AntigravityDriver.create({
@@ -22,7 +29,7 @@ const createInstance = (config: Parameters<typeof AntigravityDriver.create>[0]["
     Effect.provide(
       Layer.mergeAll(
         Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, noopSpawner),
-        NodeServices.layer,
+        serverConfigLayer,
       ),
     ),
     Effect.scoped,

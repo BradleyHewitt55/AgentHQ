@@ -218,11 +218,11 @@ export const makePiAdapter = (
     const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
     const sessions = new Map<ThreadId, PiContext>();
     const agentDir = settings.agentDir.trim() || undefined;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const { attachmentsDir } = yield* ServerConfig;
 
     const buildImages = (input: ProviderSendTurnInput) =>
       Effect.gen(function* () {
-        const fileSystem = yield* FileSystem.FileSystem;
-        const { attachmentsDir } = yield* ServerConfig;
         const images: PiImageContent[] = [];
         for (const attachment of input.attachments ?? []) {
           const attachmentPath = resolveAttachmentPath({ attachmentsDir, attachment });

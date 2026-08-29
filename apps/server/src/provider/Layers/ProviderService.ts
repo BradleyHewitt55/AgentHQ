@@ -240,7 +240,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   const revokeMcpCredential =
     options?.revokeMcpCredential ?? McpSessionRegistry.revokeActiveMcpThread;
   const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
-  const initialSubscriptionUsage = {
+  const initialSubscriptionUsage: Record<string, ProviderSubscriptionUsage> = {
     codex: unavailableSubscriptionUsage("codex"),
     claude: unavailableSubscriptionUsage("claude"),
   };
@@ -252,12 +252,13 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     ),
   );
   for (const snapshot of persistedSubscriptionUsage) {
-    initialSubscriptionUsage[snapshot.provider] = snapshot;
+    const key = snapshot.provider as string;
+    if (key === "codex" || key === "claude" || key === "grok") {
+      initialSubscriptionUsage[key] = snapshot;
+    }
   }
   const subscriptionUsage =
-    yield* Ref.make<Readonly<Record<"codex" | "claude", ProviderSubscriptionUsage>>>(
-      initialSubscriptionUsage,
-    );
+    yield* Ref.make<Readonly<Record<string, ProviderSubscriptionUsage>>>(initialSubscriptionUsage);
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
   /**
    * Attach the `t3-code` MCP server to the session that is about to start.
@@ -314,23 +315,29 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       Effect.tap((canonicalEvent) =>
         canonicalEvent.type === "account.rate-limits.updated"
           ? Effect.gen(function* () {
+              const providerKey = canonicalEvent.payload.rateLimits.provider as string;
+              if (providerKey !== "codex" && providerKey !== "claude" && providerKey !== "grok") {
+                return;
+              }
               // Merge and publish atomically: reading, awaiting the write, then
               // setting would let two concurrent updates for the same provider
               // (a five-hour and a weekly window arriving together) clobber each
               // other's windows.
-              const snapshot = yield* Ref.modify(subscriptionUsage, (current) => {
-                const next = applySubscriptionRateLimitsUpdate(
-                  current[canonicalEvent.payload.rateLimits.provider],
-                  canonicalEvent.payload.rateLimits,
-                  canonicalEvent.createdAt,
-                );
-                return [next, { ...current, [next.provider]: next }] as const;
-              });
-              yield* subscriptionUsageRepository.upsert(snapshot).pipe(
+              const current = yield* Ref.get(subscriptionUsage);
+              const existing =
+                current[providerKey] ??
+                unavailableSubscriptionUsage(providerKey as "codex" | "claude" | "grok");
+              const next = applySubscriptionRateLimitsUpdate(
+                existing,
+                canonicalEvent.payload.rateLimits,
+                canonicalEvent.createdAt,
+              );
+              yield* Ref.set(subscriptionUsage, { ...current, [next.provider]: next });
+              yield* subscriptionUsageRepository.upsert(next).pipe(
                 Effect.catch((error) =>
                   Effect.logWarning("failed to persist provider subscription usage", {
                     errorTag: error._tag,
-                    provider: snapshot.provider,
+                    provider: next.provider,
                   }),
                 ),
               );
@@ -1284,9 +1291,12 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     getSubscriptionUsage: Effect.gen(function* () {
       const providers = yield* Ref.get(subscriptionUsage);
       const readAt = yield* nowIso;
+      const list = [providers.codex, providers.claude, providers.grok].filter(
+        (p): p is ProviderSubscriptionUsage => p !== undefined,
+      );
       return {
         readAt,
-        providers: [providers.codex, providers.claude],
+        providers: list,
       } satisfies SubscriptionUsageSummary;
     }),
     rollbackConversation,

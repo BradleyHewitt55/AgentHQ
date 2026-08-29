@@ -43,6 +43,7 @@ const makeThread = (
   },
 });
 
+// @effect-diagnostics globalDate:off
 const makeProviderService = (liveThreadIds: ReadonlyArray<ThreadId> = []) =>
   ({
     startSession: () => Effect.die("unused"),
@@ -54,6 +55,10 @@ const makeProviderService = (liveThreadIds: ReadonlyArray<ThreadId> = []) =>
     listSessions: () => Effect.succeed(liveThreadIds.map((threadId) => ({ threadId }) as never)),
     getCapabilities: () => Effect.die("unused"),
     getInstanceInfo: () => Effect.die("unused"),
+    getSubscriptionUsage: Effect.succeed({
+      readAt: new globalThis.Date().toISOString(),
+      providers: [],
+    }),
     rollbackConversation: () => Effect.die("unused"),
     uploadFeedback: () => Effect.die("unused"),
     streamEvents: Stream.empty,
