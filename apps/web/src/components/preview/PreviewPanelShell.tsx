@@ -1,4 +1,5 @@
 import {
+  type MouseEventHandler,
   type ReactNode,
   type RefObject,
   useEffect,
@@ -61,6 +62,17 @@ export function PreviewPanelShell(props: {
   widthStorageKey?: string;
   /** Overrides the initial width (px) before the user has resized the panel. */
   defaultWidth?: number;
+  /**
+   * Mouse handlers for the panel's own host element. Callers that need to
+   * scope mouse behaviour to the panel (ChatView's hover-open scope) pass them
+   * here instead of wrapping the shell: an element between the shell and the
+   * layout row becomes the box `useClampedMaxWidth` measures, and a wrapper
+   * shrink-wraps the panel, so the sibling-column clamp reads the panel's own
+   * width and pins it at `PREVIEW_PANEL_MIN_WIDTH` — the resize handle then
+   * has no travel at all.
+   */
+  onMouseLeave?: MouseEventHandler<HTMLDivElement>;
+  onMouseDownCapture?: MouseEventHandler<HTMLDivElement>;
   children: ReactNode;
 }) {
   const useDragRegion = isElectron && props.mode !== "sheet" && props.mode !== "embedded";
@@ -89,6 +101,8 @@ export function PreviewPanelShell(props: {
           : "w-full",
       )}
       style={isInline && !props.maximized ? { width: `${width}px` } : undefined}
+      onMouseLeave={props.onMouseLeave}
+      onMouseDownCapture={props.onMouseDownCapture}
       data-preview-panel-mode={props.mode}
       data-preview-panel-maximized={props.maximized ? "true" : "false"}
     >

@@ -29,7 +29,11 @@ import {
 import { dedupeRemoteBranchesWithLocalMatches, normalizeGitRemoteUrl } from "@t3tools/shared/git";
 import { compactTraceAttributes } from "@t3tools/shared/observability";
 import { decodeJsonResult } from "@t3tools/shared/schemaJson";
-import { gitCommandDuration, gitCommandsTotal, withMetrics } from "../observability/Metrics.ts";
+import {
+  gitCommandDuration,
+  gitCommandsTotal,
+  withMetrics,
+} from "../orchestration/observability/Metrics.ts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
 import {
   parseRemoteNames,

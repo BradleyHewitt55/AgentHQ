@@ -64,6 +64,7 @@ import RepairProjectionThreadsSnoozed from "./Migrations/037_RepairProjectionThr
 import RepairProjectionThreadsPinOrderKey from "./Migrations/042_RepairProjectionThreadsPinOrderKey.ts";
 import RepairProjectionTurnsKeysetIndex from "./Migrations/041_RepairProjectionTurnsKeysetIndex.ts";
 import RepairProjectTasks from "./Migrations/049_RepairProjectTasks.ts";
+import DropProjectTasks from "./Migrations/050_DropProjectTasks.ts";
 
 // IDs 35-43 exist in both upstream and AgentHQ histories with different names.
 // Run both idempotent schema changes at each shared ID so new databases receive
@@ -151,6 +152,7 @@ export const migrationEntries = [
   [47, "RepairProjectionThreadLinkedPullRequest", ProjectionThreadLinkedPullRequest],
   [48, "RepairProjectionThreadsUnsettledAt", ProjectionThreadsUnsettledAt],
   [49, "RepairProjectTasks", RepairProjectTasks],
+  [50, "DropProjectTasks", DropProjectTasks],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

@@ -1,4 +1,4 @@
-import { ProjectId, TaskId, type Task } from "@t3tools/contracts";
+import { TaskId, type Task } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { describe, expect, it } from "vite-plus/test";
@@ -16,30 +16,32 @@ import {
 
 function makeTask(overrides: Partial<Task> = {}): Task {
   return {
-    taskId: TaskId.make("task-1"),
-    projectId: ProjectId.make("project-1"),
+    taskId: TaskId.make("PVTI_1"),
+    projectNodeId: "PVTPROJ_1",
     title: "Fix the login redirect",
     body: "",
     kind: "draft",
     status: "todo",
-    position: 0,
-    threadId: null,
-    github: null,
+    repository: null,
+    number: null,
+    url: null,
+    state: null,
     createdAt: "2026-07-22T00:00:00.000Z",
     updatedAt: "2026-07-22T00:00:00.000Z",
     ...overrides,
   };
 }
 
-const LINKED_GITHUB = {
-  nameWithOwner: "acme/widgets",
-  issueNumber: 42,
-  issueUrl: "https://github.com/acme/widgets/issues/42",
-  issueNodeId: "I_node42",
-  projectItemId: null,
-  projectNodeId: null,
-  lastSyncedAt: null,
-};
+function makeLinkedTask(overrides: Partial<Task> = {}): Task {
+  return makeTask({
+    kind: "issue",
+    repository: "acme/widgets",
+    number: 42,
+    url: "https://github.com/acme/widgets/issues/42",
+    state: "open",
+    ...overrides,
+  });
+}
 
 describe("selectRunningTasks", () => {
   it("returns only tasks an agent is working on", () => {
@@ -71,22 +73,22 @@ describe("countTasksByStatus", () => {
 });
 
 describe("taskIssueLabel", () => {
-  it("labels linked tasks with their issue number", () => {
-    expect(taskIssueLabel(makeTask({ github: LINKED_GITHUB }))).toBe("#42");
+  it("labels repository-backed tasks with their issue number", () => {
+    expect(taskIssueLabel(makeLinkedTask())).toBe("#42");
   });
 
-  it("returns null for a local-only draft", () => {
+  it("returns null for a Project draft", () => {
     expect(taskIssueLabel(makeTask())).toBeNull();
   });
 });
 
 describe("canPromoteTask", () => {
-  it("allows promoting an unlinked draft", () => {
+  it("allows converting a draft", () => {
     expect(canPromoteTask(makeTask())).toBe(true);
   });
 
-  it("refuses a task that already has an issue", () => {
-    expect(canPromoteTask(makeTask({ kind: "issue", github: LINKED_GITHUB }))).toBe(false);
+  it("refuses a task that is already an issue", () => {
+    expect(canPromoteTask(makeLinkedTask())).toBe(false);
   });
 });
 
@@ -129,7 +131,7 @@ describe("buildTaskHandoffPrompt", () => {
   });
 
   it("includes the issue reference and url when linked", () => {
-    const prompt = buildTaskHandoffPrompt(makeTask({ kind: "issue", github: LINKED_GITHUB }));
+    const prompt = buildTaskHandoffPrompt(makeLinkedTask());
 
     expect(prompt).toBe(
       "Work on this task: Fix the login redirect (#42)\n\nGitHub issue: https://github.com/acme/widgets/issues/42",
@@ -155,12 +157,15 @@ describe("buildTaskHandoffPromptBatch", () => {
 
   it("numbers each task and keeps bodies and issue references", () => {
     const prompt = buildTaskHandoffPromptBatch([
-      makeTask({ taskId: TaskId.make("task-1"), title: "Fix the redirect", body: "Loses query." }),
+      makeTask({ taskId: TaskId.make("PVTI_1"), title: "Fix the redirect", body: "Loses query." }),
       makeTask({
-        taskId: TaskId.make("task-2"),
+        taskId: TaskId.make("PVTI_2"),
         title: "Ship the banner",
         kind: "issue",
-        github: LINKED_GITHUB,
+        repository: "acme/widgets",
+        number: 42,
+        url: "https://github.com/acme/widgets/issues/42",
+        state: "open",
       }),
     ]);
 

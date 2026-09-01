@@ -83,11 +83,9 @@ import * as ReviewService from "./review/ReviewService.ts";
 import * as SourceControlProviderRegistry from "./sourceControl/SourceControlProviderRegistry.ts";
 import * as SourceControlRateLimit from "./sourceControl/SourceControlRateLimit.ts";
 import * as SourceControlRepositoryService from "./sourceControl/SourceControlRepositoryService.ts";
-import * as GitHubTaskSync from "./task/GitHubTaskSync.ts";
 import * as ProjectTaskService from "./task/ProjectTaskService.ts";
-import { ProjectTaskRepositoryLive } from "./persistence/Layers/ProjectTasks.ts";
 import * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts";
-import { ObservabilityLive } from "./observability/Layers/Observability.ts";
+import { ObservabilityLive } from "./orchestration/observability/Layers/Observability.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as RemoteOpenTargets from "./environment/RemoteOpenTargets.ts";
 import { authHttpApiLayer, environmentAuthenticatedAuthLayer } from "./auth/http.ts";
@@ -312,13 +310,9 @@ const SourceControlRepositoryServiceLayerLive = SourceControlRepositoryService.l
   Layer.provideMerge(SourceControlProviderRegistryLayerLive),
 );
 
-// Tasks are stored locally and only reach GitHub through the `gh` CLI, so this
-// depends on persistence plus the GitHub provider CLI rather than the full
-// source control registry.
-const ProjectTaskLayerLive = ProjectTaskService.layer.pipe(
-  Layer.provide(GitHubTaskSync.layer.pipe(Layer.provide(GitHubCli.layer))),
-  Layer.provide(ProjectTaskRepositoryLive),
-);
+// Tasks read and write GitHub Projects v2 directly, so this depends only on
+// the `gh` CLI wrapper rather than any persistence.
+const ProjectTaskLayerLive = ProjectTaskService.layer;
 
 const ReviewLayerLive = ReviewService.layer.pipe(
   Layer.provideMerge(GitVcsDriver.layer),

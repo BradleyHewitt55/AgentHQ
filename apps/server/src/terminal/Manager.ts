@@ -56,7 +56,7 @@ import {
   increment,
   terminalRestartsTotal,
   terminalSessionsTotal,
-} from "../observability/Metrics.ts";
+} from "../orchestration/observability/Metrics.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as PortScanner from "../preview/PortScanner.ts";
 import * as PtyAdapter from "./PtyAdapter.ts";

@@ -6,6 +6,8 @@ import {
   Files,
   GitPullRequest,
   Globe2,
+  KanbanSquare,
+  ListTodo,
   Plus,
   TerminalSquare,
   Volume2,
@@ -14,6 +16,7 @@ import {
 import {
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
+  type MouseEventHandler,
   type ReactElement,
   type ReactNode,
   useCallback,
@@ -49,6 +52,13 @@ interface RightPanelTabsProps {
   widthStorageKey?: string;
   /** Forwarded to PreviewPanelShell as the initial width before a user resize. */
   defaultWidth?: number;
+  /**
+   * Forwarded to PreviewPanelShell's host element. Kept on the panel itself
+   * rather than a wrapper so the inline panel stays a direct child of its
+   * layout row, which is what the shell measures to clamp resize width.
+   */
+  onMouseLeave?: MouseEventHandler<HTMLDivElement>;
+  onMouseDownCapture?: MouseEventHandler<HTMLDivElement>;
   layoutControls?: ReactNode;
   surfaces: readonly RightPanelSurface[];
   activeSurfaceId: string | null;
@@ -508,6 +518,10 @@ function surfaceTitle(
       return `#${surface.number}`;
     case "agents":
       return "Agents";
+    case "plan":
+      return "Plan";
+    case "tasks":
+      return "Tasks";
     case "preview": {
       const snapshot = surface.resourceId ? sessions[surface.resourceId] : null;
       if (!snapshot || snapshot.navStatus._tag === "Idle") return "Browser";
@@ -593,6 +607,10 @@ function SurfaceIcon({
     }
     case "agents":
       return <Bot className="size-3 shrink-0" />;
+    case "plan":
+      return <ListTodo className="size-3 shrink-0" />;
+    case "tasks":
+      return <KanbanSquare className="size-3 shrink-0" />;
   }
 }
 
@@ -775,6 +793,10 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
       {...(props.maximized !== undefined ? { maximized: props.maximized } : {})}
       {...(props.widthStorageKey !== undefined ? { widthStorageKey: props.widthStorageKey } : {})}
       {...(props.defaultWidth !== undefined ? { defaultWidth: props.defaultWidth } : {})}
+      {...(props.onMouseLeave !== undefined ? { onMouseLeave: props.onMouseLeave } : {})}
+      {...(props.onMouseDownCapture !== undefined
+        ? { onMouseDownCapture: props.onMouseDownCapture }
+        : {})}
     >
       <div
         className={cn(

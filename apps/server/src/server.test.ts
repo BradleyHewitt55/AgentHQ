@@ -128,7 +128,7 @@ import * as ServerSettings from "./serverSettings.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import * as PreviewManager from "./preview/Manager.ts";
 import * as PortScanner from "./preview/PortScanner.ts";
-import * as BrowserTraceCollector from "./observability/BrowserTraceCollector.ts";
+import * as BrowserTraceCollector from "./orchestration/observability/BrowserTraceCollector.ts";
 import * as ProjectFaviconResolver from "./project/ProjectFaviconResolver.ts";
 import * as T3ProjectFileLoader from "./project/T3ProjectFileLoader.ts";
 import * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts";
@@ -774,7 +774,7 @@ const buildAppUnderTest = (options?: {
             ...options?.layers?.sourceControlRepositoryService,
           }),
           Layer.mock(ProjectTaskService.ProjectTaskService)({
-            list: () => Effect.succeed({ tasks: [] }),
+            list: () => Effect.succeed({ project: null, projects: [], tasks: [] }),
             ...options?.layers?.projectTaskService,
           }),
         ),

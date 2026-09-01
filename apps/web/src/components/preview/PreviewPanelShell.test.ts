@@ -46,4 +46,15 @@ describe("getPreviewPanelMaxWidth", () => {
   it("stays at the panel minimum even when the row is narrower than the reservation", () => {
     expect(getPreviewPanelMaxWidth(1_512, 300)).toBe(360);
   });
+
+  it("collapses to the minimum when the measured row only wraps the panel", () => {
+    // Regression guard for the failure mode a wrapper element around the
+    // shell produces: the shell measures its parent, and a shrink-to-fit
+    // wrapper reports the panel's own width. The reservation then eats the
+    // whole row, so the clamp resolves to the minimum and the resize handle
+    // has zero travel. The inline panel must stay a direct child of the flex
+    // row it shares with the chat column.
+    expect(getPreviewPanelMaxWidth(1_512, 540)).toBe(360);
+    expect(getPreviewPanelMaxWidth(1_512, 360)).toBe(360);
+  });
 });

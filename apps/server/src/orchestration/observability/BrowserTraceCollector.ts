@@ -8,7 +8,7 @@ export class BrowserTraceCollector extends Context.Service<
   {
     readonly record: (records: ReadonlyArray<TraceRecord>) => Effect.Effect<void>;
   }
->()("t3/observability/BrowserTraceCollector") {}
+>()("t3/orchestration/observability/BrowserTraceCollector") {}
 
 export const make = (sink: TraceSink): BrowserTraceCollector["Service"] =>
   BrowserTraceCollector.of({

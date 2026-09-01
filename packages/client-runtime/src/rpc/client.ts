@@ -53,7 +53,6 @@ export type EnvironmentSubscriptionRpcTag =
   | typeof WS_METHODS.serverSubscribeUsageLimits
   | typeof WS_METHODS.previewAutomationConnect
   | typeof WS_METHODS.subscribeVcsStatus
-  | typeof WS_METHODS.subscribeTasks
   | typeof WS_METHODS.terminalAttach;
 
 export type EnvironmentStreamCommandRpcTag =

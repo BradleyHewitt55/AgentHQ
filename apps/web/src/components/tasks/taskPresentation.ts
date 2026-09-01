@@ -46,17 +46,17 @@ export function countTasksByStatus(tasks: ReadonlyArray<Task>): Record<TaskStatu
   return counts;
 }
 
-/** Short GitHub reference for a task, or `null` for a local-only draft. */
+/** Short GitHub reference for a task, or `null` for a Project draft. */
 export function taskIssueLabel(task: Task): string | null {
-  return task.github === null ? null : `#${task.github.issueNumber}`;
+  return task.number === null ? null : `#${task.number}`;
 }
 
 /**
- * A draft can be promoted only when it is not already linked to an issue.
- * Promotion additionally requires a linked repository, which the caller knows.
+ * Only Project drafts can be turned into issues — conversion is GitHub's own
+ * "convert draft issue" mutation. Issues and PRs are already linked.
  */
 export function canPromoteTask(task: Task): boolean {
-  return task.kind === "draft" && task.github === null;
+  return task.kind === "draft";
 }
 
 /**
@@ -91,8 +91,8 @@ export function buildTaskHandoffPrompt(task: Task): string {
   if (body !== "") {
     lines.push("", body);
   }
-  if (task.github !== null) {
-    lines.push("", `GitHub issue: ${task.github.issueUrl}`);
+  if (task.url !== null) {
+    lines.push("", `GitHub issue: ${task.url}`);
   }
   return lines.join("\n");
 }
@@ -115,8 +115,8 @@ export function buildTaskHandoffPromptBatch(tasks: ReadonlyArray<Task>): string 
     if (body !== "") {
       lines.push("", body);
     }
-    if (task.github !== null) {
-      lines.push("", `GitHub issue: ${task.github.issueUrl}`);
+    if (task.url !== null) {
+      lines.push("", `GitHub issue: ${task.url}`);
     }
   }
   return lines.join("\n");

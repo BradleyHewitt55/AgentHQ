@@ -4,16 +4,20 @@ import { Atom } from "effect/unstable/reactivity";
 import {
   createAtomCommandScheduler,
   createEnvironmentRpcCommand,
-  createEnvironmentSubscriptionAtomFamily,
+  createEnvironmentRpcQueryAtomFamily,
 } from "./runtime.ts";
 import type { EnvironmentRegistry } from "../connection/registry.ts";
-import { subscribe, type EnvironmentRpcInput } from "../rpc/client.ts";
 
+/**
+ * Tasks live on a GitHub Projects v2 board, which pushes nothing, so the list
+ * is a query that refetches (after mutations or explicitly) instead of a
+ * server-driven subscription.
+ */
 export function createTaskEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | R, E>,
 ) {
-  // Task mutations for one environment are serialized so board positions, which
-  // are computed server-side from the current column, cannot interleave.
+  // Task mutations for one environment are serialized so concurrent writes to
+  // the same GitHub project cannot interleave.
   const commandScheduler = createAtomCommandScheduler();
   const serialPerEnvironment = {
     mode: "serial",
@@ -21,10 +25,9 @@ export function createTaskEnvironmentAtoms<R, E>(
   } as const;
 
   return {
-    list: createEnvironmentSubscriptionAtomFamily(runtime, {
+    list: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:tasks:list",
-      subscribe: (input: EnvironmentRpcInput<typeof WS_METHODS.subscribeTasks>) =>
-        subscribe(WS_METHODS.subscribeTasks, input),
+      tag: WS_METHODS.tasksList,
     }),
     create: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:tasks:create",
@@ -47,12 +50,6 @@ export function createTaskEnvironmentAtoms<R, E>(
     promote: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:tasks:promote",
       tag: WS_METHODS.tasksPromote,
-      scheduler: commandScheduler,
-      concurrency: serialPerEnvironment,
-    }),
-    sync: createEnvironmentRpcCommand(runtime, {
-      label: "environment-data:tasks:sync",
-      tag: WS_METHODS.tasksSync,
       scheduler: commandScheduler,
       concurrency: serialPerEnvironment,
     }),

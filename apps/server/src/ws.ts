@@ -89,7 +89,7 @@ import {
   observeRpcEffect as instrumentRpcEffect,
   observeRpcStream as instrumentRpcStream,
   observeRpcStreamEffect as instrumentRpcStreamEffect,
-} from "./observability/RpcInstrumentation.ts";
+} from "./orchestration/observability/RpcInstrumentation.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
 import * as ProviderService from "./provider/Services/ProviderService.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
@@ -2088,10 +2088,6 @@ const makeWsRpcLayer = (
           observeRpcEffect(WS_METHODS.tasksList, projectTasks.list(input), {
             "rpc.aggregate": "tasks",
           }),
-        [WS_METHODS.subscribeTasks]: (input) =>
-          observeRpcStream(WS_METHODS.subscribeTasks, projectTasks.changes(input), {
-            "rpc.aggregate": "tasks",
-          }),
         [WS_METHODS.tasksCreate]: (input) =>
           observeRpcEffect(WS_METHODS.tasksCreate, projectTasks.create(input), {
             "rpc.aggregate": "tasks",
@@ -2106,10 +2102,6 @@ const makeWsRpcLayer = (
           }),
         [WS_METHODS.tasksPromote]: (input) =>
           observeRpcEffect(WS_METHODS.tasksPromote, projectTasks.promote(input), {
-            "rpc.aggregate": "tasks",
-          }),
-        [WS_METHODS.tasksSync]: (input) =>
-          observeRpcEffect(WS_METHODS.tasksSync, projectTasks.sync(input), {
             "rpc.aggregate": "tasks",
           }),
         [WS_METHODS.shellOpenInEditor]: (input) =>

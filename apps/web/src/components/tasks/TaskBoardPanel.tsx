@@ -64,14 +64,11 @@ function TaskCard(props: {
     (value: unknown) => {
       if (!isTaskStatus(value) || value === task.status) return;
       void run(() =>
-        view.updateTask(task.taskId, {
-          status: value,
-          // A linked issue mirrors the column move; a draft has nothing to push.
-          pushToGitHub: task.github !== null,
-        }),
+        // Column moves write the board's Status field directly.
+        view.updateTaskStatus(task.taskId, value),
       );
     },
-    [run, task.github, task.status, task.taskId, view],
+    [run, task.status, task.taskId, view],
   );
 
   return (
@@ -94,7 +91,7 @@ function TaskCard(props: {
           </Badge>
         ) : (
           <a
-            href={task.github?.issueUrl}
+            href={task.url ?? undefined}
             target="_blank"
             rel="noreferrer"
             className="shrink-0 text-[10px] text-muted-foreground hover:underline"
@@ -243,15 +240,17 @@ function TaskColumn(props: {
 export const TaskBoardPanel = memo(function TaskBoardPanel(props: TaskBoardPanelProps) {
   const { view } = props;
   const columns = groupTasksByStatus(view.tasks);
-  const [syncing, setSyncing] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [selectedTaskIds, setSelectedTaskIds] = useState<ReadonlySet<string>>(new Set());
 
-  const handleSync = useCallback(async () => {
-    setSyncing(true);
+  // GitHub is the source of truth and pushes nothing, so "Sync" is a plain
+  // refetch of the board.
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
     try {
-      await view.syncTasks();
+      view.refresh();
     } finally {
-      setSyncing(false);
+      setRefreshing(false);
     }
   }, [view]);
 
@@ -282,18 +281,18 @@ export const TaskBoardPanel = memo(function TaskBoardPanel(props: TaskBoardPanel
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex items-center justify-between gap-2 border-b border-border/60 px-3 py-2">
         <h2 className="text-sm font-semibold">Tasks</h2>
-        {view.canUseGitHub && (
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={syncing}
-            onClick={() => void handleSync()}
-            className="gap-1.5 text-xs"
-          >
-            <RefreshCwIcon className={cn("size-3.5", syncing && "animate-spin")} />
-            Sync
-          </Button>
-        )}
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={refreshing || view.isPending}
+          onClick={() => void handleRefresh()}
+          className="gap-1.5 text-xs"
+        >
+          <RefreshCwIcon
+            className={cn("size-3.5", (refreshing || view.isPending) && "animate-spin")}
+          />
+          Refresh
+        </Button>
       </div>
 
       {selectedTaskIds.size > 0 && (
@@ -322,29 +321,35 @@ export const TaskBoardPanel = memo(function TaskBoardPanel(props: TaskBoardPanel
 
       {view.error !== null && <p className="px-3 py-2 text-xs text-destructive">{view.error}</p>}
 
-      {view.boardUnavailable && (
-        <p className="px-3 py-2 text-xs text-muted-foreground">
-          Issues are linked, but no GitHub Projects board could be updated, so board columns are
-          local only.
-        </p>
-      )}
-
-      <ScrollArea className="min-h-0 flex-1">
-        <div className="flex flex-col gap-4 p-3">
-          {TASK_BOARD_COLUMNS.map((column) => (
-            <TaskColumn
-              key={column.status}
-              status={column.status}
-              label={column.label}
-              tasks={columns[column.status]}
-              view={view}
-              selectedTaskIds={selectedTaskIds}
-              onToggleSelected={handleToggleSelected}
-              {...(props.onPassToAgent ? { onPassToAgent: props.onPassToAgent } : {})}
-            />
-          ))}
+      {view.project === null &&
+      view.projects.length === 0 &&
+      !view.isPending &&
+      view.error === null ? (
+        <div className="flex flex-1 flex-col items-center justify-center gap-2 p-8 text-center">
+          <p className="text-sm font-medium text-muted-foreground">No project located</p>
+          <p className="max-w-[28rem] text-xs leading-relaxed text-muted-foreground/80">
+            No GitHub Projects v2 board is linked to this repository. Link a board on GitHub to
+            enable tasks for this project.
+          </p>
         </div>
-      </ScrollArea>
+      ) : (
+        <ScrollArea className="min-h-0 flex-1">
+          <div className="flex flex-col gap-4 p-3">
+            {TASK_BOARD_COLUMNS.map((column) => (
+              <TaskColumn
+                key={column.status}
+                status={column.status}
+                label={column.label}
+                tasks={columns[column.status]}
+                view={view}
+                selectedTaskIds={selectedTaskIds}
+                onToggleSelected={handleToggleSelected}
+                {...(props.onPassToAgent ? { onPassToAgent: props.onPassToAgent } : {})}
+              />
+            ))}
+          </div>
+        </ScrollArea>
+      )}
     </div>
   );
 });

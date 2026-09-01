@@ -1,20 +1,18 @@
 /**
  * React surface for project tasks.
  *
- * Wraps the task RPC atoms so components deal in plain tasks and callbacks.
- * Every mutation refreshes the project's list atom, which keeps the top-bar
- * quick action and the kanban panel showing the same rows.
+ * Tasks come straight from a GitHub Projects v2 board, which pushes nothing,
+ * so the list is a query that refetches after every mutation instead of a
+ * server-driven subscription.
  */
 import type {
   EnvironmentId,
   ProjectId,
   Task,
-  TaskKind,
+  TaskCreatableKind,
+  TaskProjectRef,
   TaskStatus,
-  ThreadId,
 } from "@t3tools/contracts";
-import * as Option from "effect/Option";
-import { AsyncResult } from "effect/unstable/reactivity";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { useEnvironmentQuery } from "./query";
@@ -25,18 +23,19 @@ import { vcsEnvironment } from "./vcs";
 export interface ProjectTaskScope {
   readonly environmentId: EnvironmentId | null;
   readonly projectId: ProjectId | null;
-  /** Workspace root, required for anything that reaches GitHub. */
+  /** Workspace root; anchors `gh` auth, repository lookups, and issue creation. */
   readonly cwd: string | null;
 }
 
 const EMPTY_TASKS: ReadonlyArray<Task> = [];
+const EMPTY_PROJECTS: ReadonlyArray<TaskProjectRef> = [];
 
 export function useProjectTasks(scope: ProjectTaskScope) {
   const listAtom =
-    scope.environmentId !== null && scope.projectId !== null
+    scope.environmentId !== null && scope.projectId !== null && scope.cwd !== null
       ? taskEnvironment.list({
           environmentId: scope.environmentId,
-          input: { projectId: scope.projectId },
+          input: { projectId: scope.projectId, cwd: scope.cwd },
         })
       : null;
 
@@ -55,7 +54,6 @@ export function useProjectTasks(scope: ProjectTaskScope) {
   const runUpdate = useAtomCommand(taskEnvironment.update);
   const runRemove = useAtomCommand(taskEnvironment.remove);
   const runPromote = useAtomCommand(taskEnvironment.promote);
-  const runSync = useAtomCommand(taskEnvironment.sync);
 
   const { refresh } = query;
   const { environmentId, projectId, cwd } = scope;
@@ -68,143 +66,116 @@ export function useProjectTasks(scope: ProjectTaskScope) {
     status.hasPrimaryRemote &&
     status.sourceControlProvider?.kind === "github";
 
-  const [boardUnavailable, setBoardUnavailable] = useState(false);
-  // The hook lives in a view that survives a project switch, so a warning
-  // raised for one project must not follow the user into the next one.
-  useEffect(() => setBoardUnavailable(false), [projectId]);
+  const [isMutating, setMutating] = useState(false);
+  // The hook lives in a view that survives a project switch; drop a stale
+  // mutation flag when the scope moves on.
+  useEffect(() => setMutating(false), [projectId]);
 
-  /**
-   * A push can link the issue yet fail to place it on the Projects v2 board;
-   * the last GitHub-touching mutation decides what the board panel warns about.
-   */
-  const noteBoardOutcome = useCallback(
-    (result: AsyncResult.AsyncResult<{ readonly boardUnavailable: boolean }, unknown>) => {
-      const value = Option.getOrNull(AsyncResult.value(result));
-      if (value !== null) {
-        setBoardUnavailable(value.boardUnavailable);
+  const track = useCallback(
+    async <A>(run: () => Promise<A>): Promise<A> => {
+      setMutating(true);
+      try {
+        return await run();
+      } finally {
+        setMutating(false);
+        // GitHub pushes nothing, so every mutation refetches the board.
+        refresh();
       }
     },
-    [],
+    [refresh],
   );
 
   const createTask = useCallback(
-    async (input: { title: string; body?: string; kind: TaskKind; status?: TaskStatus }) => {
-      if (environmentId === null || projectId === null) return null;
-      const result = await runCreate({
-        environmentId,
-        input: {
-          projectId,
-          title: input.title,
-          ...(input.body === undefined ? {} : { body: input.body }),
-          kind: input.kind,
-          ...(input.status === undefined ? {} : { status: input.status }),
-          // Creating an `issue` needs a GitHub repository to file it in;
-          // without one the server stores a promotable draft instead.
-          ...(input.kind === "issue" && canUseGitHub && cwd !== null ? { cwd } : {}),
-        },
-      });
-      noteBoardOutcome(result);
-      refresh();
-      return result;
+    (input: { title: string; body?: string; kind: TaskCreatableKind }) => {
+      if (environmentId === null || projectId === null || cwd === null) {
+        return Promise.resolve(null);
+      }
+      return track(() =>
+        runCreate({
+          environmentId,
+          input: {
+            projectId,
+            cwd,
+            title: input.title,
+            ...(input.body === undefined ? {} : { body: input.body }),
+            kind: input.kind,
+          },
+        }),
+      );
     },
-    [canUseGitHub, cwd, environmentId, noteBoardOutcome, projectId, refresh, runCreate],
+    [cwd, environmentId, projectId, runCreate, track],
   );
 
-  const updateTask = useCallback(
-    async (
-      taskId: Task["taskId"],
-      changes: {
-        title?: string;
-        body?: string;
-        status?: TaskStatus;
-        position?: number;
-        threadId?: ThreadId | null;
-        pushToGitHub?: boolean;
-      },
-    ) => {
-      if (environmentId === null || projectId === null) return null;
-      const result = await runUpdate({
-        environmentId,
-        input: {
-          taskId,
-          projectId,
-          ...changes,
-          ...(changes.pushToGitHub === true && cwd !== null ? { cwd } : {}),
-        },
-      });
-      noteBoardOutcome(result);
-      refresh();
-      return result;
+  const updateTaskStatus = useCallback(
+    (taskId: Task["taskId"], status: TaskStatus) => {
+      if (environmentId === null || projectId === null || cwd === null) {
+        return Promise.resolve(null);
+      }
+      return track(() => runUpdate({ environmentId, input: { taskId, projectId, cwd, status } }));
     },
-    [cwd, environmentId, noteBoardOutcome, projectId, refresh, runUpdate],
+    [cwd, environmentId, projectId, runUpdate, track],
   );
 
   const deleteTask = useCallback(
-    async (taskId: Task["taskId"]) => {
-      if (environmentId === null || projectId === null) return null;
-      const result = await runRemove({ environmentId, input: { taskId, projectId } });
-      refresh();
-      return result;
+    (taskId: Task["taskId"]) => {
+      if (environmentId === null || projectId === null || cwd === null) {
+        return Promise.resolve(null);
+      }
+      return track(() => runRemove({ environmentId, input: { taskId, projectId, cwd } }));
     },
-    [environmentId, projectId, refresh, runRemove],
+    [cwd, environmentId, projectId, runRemove, track],
   );
 
   const promoteTask = useCallback(
-    async (taskId: Task["taskId"]) => {
-      if (environmentId === null || projectId === null || cwd === null) return null;
-      const result = await runPromote({ environmentId, input: { taskId, projectId, cwd } });
-      noteBoardOutcome(result);
-      refresh();
-      return result;
+    (taskId: Task["taskId"]) => {
+      if (environmentId === null || projectId === null || cwd === null) {
+        return Promise.resolve(null);
+      }
+      return track(() => runPromote({ environmentId, input: { taskId, projectId, cwd } }));
     },
-    [cwd, environmentId, noteBoardOutcome, projectId, refresh, runPromote],
+    [cwd, environmentId, projectId, runPromote, track],
   );
 
-  const syncTasks = useCallback(async () => {
-    if (environmentId === null || projectId === null || cwd === null) return null;
-    const result = await runSync({ environmentId, input: { projectId, cwd } });
-    noteBoardOutcome(result);
-    refresh();
-    return result;
-  }, [cwd, environmentId, noteBoardOutcome, projectId, refresh, runSync]);
-
   const tasks = query.data?.tasks ?? EMPTY_TASKS;
+  const project = query.data?.project ?? null;
+  const projects = query.data?.projects ?? EMPTY_PROJECTS;
 
   return useMemo(
     () => ({
       tasks,
+      project,
+      projects,
       error: query.error,
       isPending: query.isPending,
-      /** True when GitHub-backed actions (promote, sync) can run. */
+      isMutating,
+      /** True when GitHub-backed actions (issue creation, promote) can run. */
       canUseGitHub,
-      /** True when the last GitHub push could not place the issue on a board. */
-      boardUnavailable,
       refresh,
       createTask,
-      updateTask,
+      updateTaskStatus,
       deleteTask,
       promoteTask,
-      syncTasks,
     }),
     [
-      boardUnavailable,
       canUseGitHub,
       createTask,
       deleteTask,
+      isMutating,
+      project,
+      projects,
       promoteTask,
       query.error,
       query.isPending,
       refresh,
-      syncTasks,
       tasks,
-      updateTask,
+      updateTaskStatus,
     ],
   );
 }
 
 export type ProjectTasksView = ReturnType<typeof useProjectTasks>;
 
-/** Group tasks into kanban columns, preserving the server's board ordering. */
+/** Group tasks into kanban columns, preserving the fetch order inside each. */
 export function groupTasksByStatus(
   tasks: ReadonlyArray<Task>,
 ): Record<TaskStatus, ReadonlyArray<Task>> {

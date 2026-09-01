@@ -3503,7 +3503,7 @@ function ChatViewContent(props: ChatViewProps) {
   });
   /**
    * Hand a task to the agent: seed the composer with the task context, focus
-   * it, and move the task into `in_progress` (mirroring to GitHub when linked).
+   * it, and move the board's Status column to In progress on GitHub.
    */
   const passTaskToAgent = useCallback(
     (task: Task) => {
@@ -3511,20 +3511,13 @@ function ChatViewContent(props: ChatViewProps) {
         ensureLeadingBoundary: true,
       });
       scheduleComposerFocus();
-      const nextStatus = statusAfterHandoff(task);
-      void projectTasks.updateTask(task.taskId, {
-        status: nextStatus,
-        ...(activeThreadId ? { threadId: activeThreadId } : {}),
-        // Only tasks already filed as issues need their board column mirrored.
-        pushToGitHub: task.github !== null,
-      });
+      void projectTasks.updateTaskStatus(task.taskId, statusAfterHandoff(task));
     },
-    [activeThreadId, composerRef, projectTasks, scheduleComposerFocus],
+    [composerRef, projectTasks, scheduleComposerFocus],
   );
   /**
    * Hand several tasks to the agent at once: seed the composer with a combined
-   * prompt, then move each task into `in_progress` (mirroring to GitHub when
-   * linked).
+   * prompt, then move each of their Status columns to In progress.
    */
   const passTasksToAgent = useCallback(
     (tasks: Task[]) => {
@@ -3534,15 +3527,10 @@ function ChatViewContent(props: ChatViewProps) {
       });
       scheduleComposerFocus();
       for (const task of tasks) {
-        const nextStatus = statusAfterHandoff(task);
-        void projectTasks.updateTask(task.taskId, {
-          status: nextStatus,
-          ...(activeThreadId ? { threadId: activeThreadId } : {}),
-          pushToGitHub: task.github !== null,
-        });
+        void projectTasks.updateTaskStatus(task.taskId, statusAfterHandoff(task));
       }
     },
-    [activeThreadId, composerRef, projectTasks, scheduleComposerFocus],
+    [composerRef, projectTasks, scheduleComposerFocus],
   );
   // The thread's own change request, placed against the project it belongs to. Without a
   // project there is nothing to resolve it against, so the caller falls back to the browser.
@@ -7336,46 +7324,44 @@ function ChatViewContent(props: ChatViewProps) {
       ) : null}
 
       {!shouldUsePlanSidebarSheet && rightPanelOpen && activeThreadRef ? (
-        <div
-          className="flex min-h-0 min-w-0"
+        // The hover-open scope lives on the panel's own element: a wrapper
+        // here would become the flex row PreviewPanelShell measures, which
+        // shrink-wraps the panel and freezes its resize handle.
+        <RightPanelTabs
+          mode="inline"
           onMouseLeave={closeHoverOpenedRightPanel}
           onMouseDownCapture={pinHoverOpenedRightPanel}
-          data-right-panel-hover-scope
+          maximized={rightPanelMaximized}
+          surfaces={rightPanelState.surfaces}
+          activeSurfaceId={activeRightPanelSurface?.id ?? null}
+          pendingSurfaceIds={pendingFileSurfaceIds}
+          previewSessions={activePreviewState.sessions}
+          desktopByTabId={activePreviewState.desktopByTabId}
+          previewRuntimeTabId={resolvePreviewRuntimeTabId}
+          terminalLabelsById={activeTerminalLabelsById}
+          onActivate={activateRightPanelSurface}
+          onCloseSurface={closeRightPanelSurface}
+          onCloseOtherSurfaces={closeOtherRightPanelSurfaces}
+          onCloseSurfacesToRight={closeRightPanelSurfacesToRight}
+          onCloseAllSurfaces={closeAllRightPanelSurfaces}
+          onCopyFilePath={copyRightPanelFilePath}
+          onAddBrowser={createBrowserSurface}
+          onAddTerminal={addTerminalSurface}
+          onAddDiff={addDiffSurface}
+          onAddFiles={addFilesSurface}
+          onAddPullRequest={addPullRequestSurface}
+          onAddAgents={addAgentsSurface}
+          browserAvailable={isPreviewSupportedInRuntime()}
+          terminalAvailable={activeProject !== null}
+          diffAvailable={isServerThread && isGitRepo}
+          filesAvailable={activeProject !== null}
+          pullRequestAvailable={pullRequestSurfaceAvailable}
+          agentsAvailable
+          pullRequestStatuses={pullRequestTabStatuses}
+          liveAgentCount={agentPanelModel.liveCount}
         >
-          <RightPanelTabs
-            mode="inline"
-            maximized={rightPanelMaximized}
-            surfaces={rightPanelState.surfaces}
-            activeSurfaceId={activeRightPanelSurface?.id ?? null}
-            pendingSurfaceIds={pendingFileSurfaceIds}
-            previewSessions={activePreviewState.sessions}
-            desktopByTabId={activePreviewState.desktopByTabId}
-            previewRuntimeTabId={resolvePreviewRuntimeTabId}
-            terminalLabelsById={activeTerminalLabelsById}
-            onActivate={activateRightPanelSurface}
-            onCloseSurface={closeRightPanelSurface}
-            onCloseOtherSurfaces={closeOtherRightPanelSurfaces}
-            onCloseSurfacesToRight={closeRightPanelSurfacesToRight}
-            onCloseAllSurfaces={closeAllRightPanelSurfaces}
-            onCopyFilePath={copyRightPanelFilePath}
-            onAddBrowser={createBrowserSurface}
-            onAddTerminal={addTerminalSurface}
-            onAddDiff={addDiffSurface}
-            onAddFiles={addFilesSurface}
-            onAddPullRequest={addPullRequestSurface}
-            onAddAgents={addAgentsSurface}
-            browserAvailable={isPreviewSupportedInRuntime()}
-            terminalAvailable={activeProject !== null}
-            diffAvailable={isServerThread && isGitRepo}
-            filesAvailable={activeProject !== null}
-            pullRequestAvailable={pullRequestSurfaceAvailable}
-            agentsAvailable
-            pullRequestStatuses={pullRequestTabStatuses}
-            liveAgentCount={agentPanelModel.liveCount}
-          >
-            {rightPanelContent}
-          </RightPanelTabs>
-        </div>
+          {rightPanelContent}
+        </RightPanelTabs>
       ) : null}
       {shouldUsePlanSidebarSheet && rightPanelOpen && activeThreadRef ? (
         <RightPanelSheet open onClose={planSidebarOpen ? closePlanSidebar : closePreviewPanel}>

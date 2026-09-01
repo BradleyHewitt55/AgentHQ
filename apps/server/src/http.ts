@@ -33,7 +33,7 @@ import {
   storeAttachmentUpload,
   validateAttachmentUploadToken,
 } from "./assets/AttachmentUpload.ts";
-import * as BrowserTraceCollector from "./observability/BrowserTraceCollector.ts";
+import * as BrowserTraceCollector from "./orchestration/observability/BrowserTraceCollector.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import { traceRelayRequest } from "./cloud/traceRelayRequest.ts";
 import {

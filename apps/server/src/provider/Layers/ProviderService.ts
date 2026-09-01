@@ -50,7 +50,7 @@ import {
   providerTurnsTotal,
   providerTurnMetricAttributes,
   withMetrics,
-} from "../../observability/Metrics.ts";
+} from "../../orchestration/observability/Metrics.ts";
 import { type ProviderAdapterError, ProviderValidationError } from "../Errors.ts";
 import {
   applySubscriptionRateLimitsUpdate,
